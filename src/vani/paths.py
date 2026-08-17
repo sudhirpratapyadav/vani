@@ -5,7 +5,8 @@ Everything follows the XDG basedir spec, so the whole app is removable with
 
   ~/.config/vani/config.toml            configuration (mode 600 — holds the token)
   ~/.local/share/vani/<vosk-model>/     wake-word model
-  ~/.cache/vani/history.log             transcript history
+  ~/.cache/vani/history.log             dictation history (v1)
+  ~/.cache/vani/transcript.jsonl        rolling ambient transcript (v2, expires)
   ~/.cache/vani/last.wav                last audio sent, for debugging
   $XDG_RUNTIME_DIR/vani/                volatile state shared between processes
 """
@@ -49,6 +50,11 @@ def history_file() -> Path:
     return cache_dir() / "history.log"
 
 
+def transcript_file() -> Path:
+    """v2's rolling transcript (JSONL). Expires; see transcript.py."""
+    return cache_dir() / "transcript.jsonl"
+
+
 def last_wav() -> Path:
     return cache_dir() / "last.wav"
 
@@ -65,6 +71,10 @@ def status_file() -> Path:
 
 def daemon_pidfile() -> Path:
     return runtime_dir() / "daemon.pid"
+
+
+def listener_pidfile() -> Path:
+    return runtime_dir() / "listener.pid"
 
 
 def toggle_pidfile() -> Path:

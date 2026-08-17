@@ -32,6 +32,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="replay a 16 kHz mono WAV through the state machine and exit")
     p.set_defaults(func=cmd_start)
 
+    p = sub.add_parser("listen", help="[v2] stream ambient speech to the transcript")
+    p.add_argument("--tail", action="store_true",
+                   help="follow the existing transcript instead of listening")
+    p.add_argument("-n", "--lines", type=int, default=20,
+                   help="with --tail, how much history to show first")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="print words as they arrive")
+    p.add_argument("--test-wav", metavar="FILE",
+                   help="replay a 16 kHz mono WAV through the gate and the socket")
+    p.set_defaults(func=cmd_listen)
+
     p = sub.add_parser("toggle", help="start/stop a push-to-talk recording")
     p.set_defaults(func=cmd_toggle)
 
@@ -90,6 +101,42 @@ def cmd_start(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         return 0
     return 0
+
+
+def cmd_listen(args: argparse.Namespace) -> int:
+    from . import listener, transcript
+
+    cfg = _load(args)
+    log = transcript.Transcript(retain_days=cfg.stream.retain_days)
+    if args.tail:
+        return _tail(log, args.lines)
+    if args.test_wav:
+        return listener.run_test_wav(cfg, args.test_wav, verbose=args.verbose)
+
+    running = listener.is_running()
+    if running:
+        print(f"already listening (pid {running})", file=sys.stderr)
+        return 1
+    listener.Listener(cfg, verbose=args.verbose).run()
+    return 0
+
+
+def _tail(log, lines: int) -> int:
+    """Print recent entries, then follow. The transcript is the interface."""
+    import time
+
+    seen = log.read(limit=lines or None)
+    for entry in seen:
+        print(f"{entry.stamp}  {entry.text}")
+    last = seen[-1].at if seen else 0.0
+    try:
+        while True:
+            time.sleep(1.0)
+            for entry in log.read(since=last + 1e-6):
+                print(f"{entry.stamp}  {entry.text}", flush=True)
+                last = entry.at
+    except KeyboardInterrupt:
+        return 0
 
 
 def cmd_toggle(args: argparse.Namespace) -> int:

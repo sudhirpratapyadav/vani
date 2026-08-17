@@ -24,6 +24,8 @@ dependencies = []
 [project.optional-dependencies]
 # Wake-word spotting. Without it, vani is hotkey-driven only.
 wake = ["vosk>=0.3.44"]
+# v2 `vani listen`: the realtime ASR WebSocket. v1 dictation needs nothing.
+stream = ["websockets>=12"]
 # The tray also needs system packages: python3-gi, gir1.2-appindicator3-0.1.
 dev = ["pytest>=7"]
 

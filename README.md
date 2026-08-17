@@ -79,6 +79,8 @@ Pressing the key during a recording sends it immediately.
 | `vani model download` | fetch the wake-word model |
 | `vani say file.wav` | transcribe a WAV from the command line |
 | `vani start --test-wav f.wav` | replay a WAV through the state machine, no mic or network |
+| `vani listen` | **v2 (in progress)** — stream ambient speech to a rolling transcript |
+| `vani listen --tail` | follow that transcript live |
 
 ## How it works
 
@@ -126,6 +128,29 @@ Design notes worth knowing before changing things:
 Layout: `session.py` is the state machine and knows nothing about microphones,
 HTTP, or the desktop — that's what makes it testable offline. `daemon.py` wires
 it to `audio.py`, `wake.py`, `hotkey.py`, `client.py`, and `output.py`.
+
+## v2 — the ambient agent
+
+An always-listening sibling to dictation is being built alongside it, described
+in [docs/v2-design.md](docs/v2-design.md). Phase 1 — the ear — works today:
+
+```sh
+pip install --user websockets          # the only new dependency
+vani listen                            # start listening
+vani listen --tail                     # watch the transcript fill up
+vani listen --test-wav clip.wav -v     # replay a WAV, no microphone needed
+```
+
+Speech goes to a realtime Voxtral on the GPU over a WebSocket and comes back
+word by word, ~0.4 s behind. A coarse voice-activity gate means silence never
+leaves the machine: it activates on speech, replays a one-second pre-roll so the
+first word survives, streams continuously through the pauses in a sentence, and
+releases after `stream.inactive_after_sec` (default 30) of quiet. On a sparse
+day that is roughly 15% of what the microphone hears.
+
+Transcripts land in `~/.cache/vani/transcript.jsonl` and expire after
+`stream.retain_days`. Audio is never written to disk. No agent and no actions
+yet — phase 1 exists to gather a real corpus before anything is tuned against it.
 
 ## Configuration
 
