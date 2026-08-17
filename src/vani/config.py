@@ -67,6 +67,23 @@ class RecordingConfig:
 
 
 @dataclass
+class StreamConfig:
+    """v2: the always-on stream to the realtime ASR. Unused by v1 dictation."""
+    #: Realtime WebSocket endpoint (OpenAI-realtime shaped).
+    url: str = "wss://ai-stream.lsquarelabs.com/v1/realtime"
+    #: Model name sent in session.update.
+    model: str = "mistralai/Voxtral-Mini-4B-Realtime-2602"
+    #: Silence that ends an active stretch and returns to listening.
+    inactive_after_sec: float = 30.0
+    #: Audio kept before activation, so the first word is never clipped.
+    preroll_sec: float = 1.0
+    #: Audio per WebSocket frame.
+    frame_ms: int = 200
+    #: Transcript entries older than this are deleted.
+    retain_days: float = 14.0
+
+
+@dataclass
 class HotkeyConfig:
     #: Watch a physical key via X raw input events.
     enabled: bool = True
@@ -96,6 +113,7 @@ class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     wake: WakeConfig = field(default_factory=WakeConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
+    stream: StreamConfig = field(default_factory=StreamConfig)
     hotkey: HotkeyConfig = field(default_factory=HotkeyConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     #: Where this config was read from (empty when built from defaults).
@@ -162,7 +180,7 @@ def load(path: Path | None = None, *, required: bool = True) -> Config:
         raise ConfigError(f"cannot read {path}: {exc}") from None
 
     cfg = Config(source=str(path))
-    for section_name in ("server", "wake", "recording", "hotkey", "output"):
+    for section_name in ("server", "wake", "recording", "stream", "hotkey", "output"):
         section = data.pop(section_name, {})
         if not isinstance(section, dict):
             raise ConfigError(f"{path}: [{section_name}] must be a table")
@@ -225,6 +243,12 @@ def _validate(cfg: Config) -> None:
             raise ConfigError(f"recording.{name} must be positive")
     if r.max_sec <= r.min_sec:
         raise ConfigError("recording.max_sec must be greater than min_sec")
+    s = cfg.stream
+    for name in ("inactive_after_sec", "preroll_sec", "frame_ms", "retain_days"):
+        if getattr(s, name) <= 0:
+            raise ConfigError(f"stream.{name} must be positive")
+    if not s.url.startswith(("ws://", "wss://")):
+        raise ConfigError("stream.url must start with ws:// or wss://")
     if cfg.output.typer not in ("auto", "xdotool", "ydotool", "clipboard", "stdout"):
         raise ConfigError(
             "output.typer must be one of: auto, xdotool, ydotool, clipboard, stdout"
@@ -315,7 +339,7 @@ def dump(cfg: Config, *, mask_token: bool = False) -> str:
     shows up here without anyone remembering to update a string.
     """
     out: list[str] = []
-    for name in ("server", "wake", "recording", "hotkey", "output"):
+    for name in ("server", "wake", "recording", "stream", "hotkey", "output"):
         section = getattr(cfg, name)
         out.append(f"[{name}]")
         for spec in fields(section):
