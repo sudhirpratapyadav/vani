@@ -1,0 +1,14 @@
+[Unit]
+Description=vani tray indicator
+After=graphical-session.target vani-daemon.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/vani tray
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target

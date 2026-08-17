@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vani"
+version = "1.0.0"
+description = "Voice dictation for the Linux desktop — speak, and the text is typed"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+keywords = ["dictation", "speech-to-text", "voice", "linux", "vosk", "voxtral"]
+classifiers = [
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+# The core client deliberately has no Python dependencies: recording is an
+# arecord pipe, HTTP is urllib, TOML falls back to a bundled reader on 3.10.
+dependencies = []
+
+[project.optional-dependencies]
+# Wake-word spotting. Without it, vani is hotkey-driven only.
+wake = ["vosk>=0.3.44"]
+# The tray also needs system packages: python3-gi, gir1.2-appindicator3-0.1.
+dev = ["pytest>=7"]
+
+[project.scripts]
+vani = "vani.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/sudhir/vani#readme"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

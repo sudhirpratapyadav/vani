@@ -1,0 +1,21 @@
+[Unit]
+Description=vani dictation daemon
+# X11 tools (xinput, xdotool) need a live graphical session, so the daemon is
+# tied to it: started after it, and stopped with it.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p %h/.cache/vani
+ExecStart=%h/.local/bin/vani start
+Restart=on-failure
+RestartSec=5
+# DISPLAY/XAUTHORITY normally arrive via the session's
+# `systemctl --user import-environment`; this is the fallback.
+Environment=DISPLAY=:0
+StandardOutput=append:%h/.cache/vani/daemon.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
