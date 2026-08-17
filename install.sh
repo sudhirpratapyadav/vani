@@ -104,7 +104,17 @@ if ((WITH_SERVICE)); then
     systemctl --user import-environment DISPLAY XAUTHORITY 2>/dev/null || true
     systemctl --user enable --now vani-daemon.service
     echo "  enabled vani-daemon.service"
-    echo "  tray (optional):  systemctl --user enable --now vani-tray.service"
+    # The tray is optional, but "optional" was being read as "someone will
+    # enable this later" and nobody did — so turn it on when the typelib it
+    # needs is actually installed, and explain the gap when it is not.
+    if python3 -c 'import gi; gi.require_version("AppIndicator3", "0.1")' 2>/dev/null; then
+        systemctl --user enable --now vani-tray.service
+        echo "  enabled vani-tray.service"
+    else
+        warn "no AppIndicator3 typelib — skipping the tray; to enable it later:"
+        warn "  sudo apt install python3-gi gir1.2-appindicator3-0.1"
+        warn "  systemctl --user enable --now vani-tray.service"
+    fi
 fi
 
 say "Checking the installation"
