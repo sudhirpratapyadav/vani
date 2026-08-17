@@ -22,7 +22,7 @@ $ vani doctor
 ## Install
 
 ```sh
-git clone <this repo> vani && cd vani
+git clone https://github.com/sudhirpratapyadav/vani.git && cd vani
 ./install.sh
 ```
 
@@ -188,7 +188,7 @@ via a desktop shortcut work either way.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests -t tests   # 66 tests, no mic or network
+PYTHONPATH=src python3 -m unittest discover -s tests -t tests   # no mic or network
 PYTHONPATH=src python3 -m vani doctor            # run from the source tree
 vani start --test-wav clip.wav                   # replay audio through the state machine
 ```

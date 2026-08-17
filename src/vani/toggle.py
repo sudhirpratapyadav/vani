@@ -25,18 +25,33 @@ def toggle(cfg: Config) -> int:
     if daemon.signal_toggle():
         return 0
     paths.ensure_dirs()
-    pid = state.read_pidfile(paths.toggle_pidfile())
-    return _stop_and_send(cfg) if pid else _start(cfg)
+    return _stop_and_send(cfg) if _pending_clip() else _start(cfg)
+
+
+def _pending_clip() -> bool:
+    """Is a recording running, or a finished one waiting to be sent?
+
+    arecord now exits by itself at `recording.max_sec`, which leaves a stale
+    pidfile beside a perfectly good clip. The next press should send that clip
+    rather than throw it away and start over.
+    """
+    pidfile = paths.toggle_pidfile()
+    if not pidfile.exists():
+        return False
+    return state.read_pidfile(pidfile) is not None or paths.toggle_wav().exists()
 
 
 def _start(cfg: Config) -> int:
     notifier = Notifier(cfg.output.notify)
     wav = paths.toggle_wav()
     wav.unlink(missing_ok=True)
+    # -d stops at max_sec, so a forgotten push-to-talk cannot record all day.
+    # Never 0, which arecord reads as "no limit".
+    limit = max(1, round(cfg.recording.max_sec))
     try:
         proc = subprocess.Popen(
             ["arecord", "-q", "-f", "S16_LE", "-r", str(cfg.recording.sample_rate),
-             "-c", "1", str(wav)],
+             "-c", "1", "-d", str(limit), str(wav)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as exc:
         notifier.show(f"Cannot record: {exc}", 5000)
@@ -76,7 +91,7 @@ def _stop_and_send(cfg: Config) -> int:
         pcm, _ = audio.auto_gain(pcm)
     wav = audio.to_wav(pcm, cfg.recording.sample_rate)
     if cfg.output.save_last_wav:
-        paths.last_wav().write_bytes(wav)
+        state.save_last_wav(wav)
 
     try:
         text = Client(cfg).transcribe(wav)

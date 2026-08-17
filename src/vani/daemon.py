@@ -42,6 +42,8 @@ class Daemon:
         self.spotter = wake.NullSpotter() if dry_run else self._build_spotter()
         self.session = Session(cfg, self.spotter, self.handle_clip, self.handle_event)
         self.events: "queue.Queue[str]" = queue.Queue()
+        #: Set by the SIGUSR1 handler; see _install_signals for why not a queue.
+        self.toggle_requested = False
         self.chunk_bytes = int(CHUNK_SEC * cfg.recording.sample_rate * audio.SAMPLE_WIDTH)
 
     def _build_spotter(self):
@@ -86,8 +88,8 @@ class Daemon:
                 log("auto-gain applied (x%.1f)" % factor)
 
         wav = audio.to_wav(pcm, self.cfg.recording.sample_rate)
-        if self.cfg.output.save_last_wav:
-            _save_last_wav(wav)
+        if self.cfg.output.save_last_wav and not state.save_last_wav(wav):
+            log(f"could not save {paths.last_wav()}")
 
         self.notifier.show("Transcribing %.1fs..."
                            % audio.duration(pcm, self.cfg.recording.sample_rate),
@@ -143,6 +145,11 @@ class Daemon:
         """Feed the session until it asks for a restart. False = mic died."""
         for chunk in mic.chunks():
             restart = False
+            if self.toggle_requested:
+                # Cleared first: a signal arriving during on_hotkey sets the
+                # flag again and is handled on the next chunk rather than lost.
+                self.toggle_requested = False
+                restart = self.session.on_hotkey()
             while not self.events.empty():
                 self.events.get_nowait()
                 restart = self.session.on_hotkey() or restart
@@ -152,7 +159,11 @@ class Daemon:
 
     def _install_signals(self) -> None:
         def on_toggle(_sig, _frm):
-            self.events.put("key")
+            # Only an attribute assignment, which is atomic. Putting to the
+            # queue here can deadlock: the handler runs on the main thread, and
+            # if the signal lands while that thread is inside empty()/get_nowait()
+            # it would block forever on a lock it already holds itself.
+            self.toggle_requested = True
 
         def on_term(_sig, _frm):
             log("shutting down")
@@ -181,14 +192,6 @@ def deliver(text: str, typist: Typist, notifier: Notifier, cfg: Config) -> None:
         notifier.show("📋 copied: " + text[:80], 4000, replace=True)
     elif backend:
         notifier.show("✓ " + text[:80], 2500, replace=True)
-
-
-def _save_last_wav(wav: bytes) -> None:
-    try:
-        paths.cache_dir().mkdir(parents=True, exist_ok=True)
-        paths.last_wav().write_bytes(wav)
-    except OSError as exc:
-        log(f"could not save last.wav: {exc}")
 
 
 def _num(value: float) -> str:

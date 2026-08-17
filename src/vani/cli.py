@@ -162,11 +162,9 @@ def cmd_config(args: argparse.Namespace) -> int:
 
     cfg = _load(args)
     print(f"# effective configuration (from {cfg.source or 'defaults'})")
-    text = config.render(cfg)
-    token = cfg.server.token
-    if token:  # never print the secret, even to a terminal the user owns
-        text = text.replace(token, "***")
-    print(text)
+    # dump(), not render(): this must show what the daemon will actually use,
+    # including the keys the starter template leaves out.
+    print(config.dump(cfg, mask_token=True))
     return 0
 
 

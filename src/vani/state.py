@@ -57,6 +57,21 @@ def append_history(text: str) -> None:
         pass
 
 
+def save_last_wav(wav: bytes) -> bool:
+    """Keep the last clip for debugging. False if it could not be written.
+
+    Never raises: a full or read-only cache directory must not turn a
+    successful transcription into a traceback just before it is typed.
+    """
+    try:
+        path = paths.last_wav()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(wav)
+        return True
+    except OSError:
+        return False
+
+
 def read_history(limit: int | None = None) -> list[tuple[str, str]]:
     """Most recent first, as (timestamp, text) pairs."""
     try:

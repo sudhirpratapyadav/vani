@@ -249,7 +249,7 @@ TEMPLATE = """\
 url = "{url}"
 token = "{token}"
 # token_file = "~/.config/vani/token"   # alternative to the line above
-timeout_sec = 120
+timeout_sec = {timeout_sec}
 
 [wake]
 enabled = {wake_enabled}
@@ -260,32 +260,83 @@ phrases = [{phrases}]
 silence_sec = {silence_sec}        # silence that ends a recording
 silence_warn_sec = {warn_sec}   # silence before the countdown appears
 max_sec = {max_sec}          # hard limit on one recording
-auto_gain = true
+auto_gain = {auto_gain}
 
 [hotkey]
-enabled = true
+enabled = {hotkey_enabled}
 keycode = {keycode}          # XF86AudioNext; find yours with:
                      # xinput test-xi2 --root | grep -A2 RawKeyPress
 
 [output]
-typer = "auto"       # auto | xdotool | ydotool | clipboard | stdout
-notify = true
-history = true
+typer = "{typer}"       # auto | xdotool | ydotool | clipboard | stdout
+notify = {notify}
+history = {history}
 """
 
 
 def render(cfg: Config) -> str:
+    """The annotated starter file written by `vani config init`.
+
+    This is a readable subset — every key it *does* write reflects `cfg`, but
+    the rarely-touched ones are left out so a fresh config stays short. Use
+    `dump` when the output has to account for every setting.
+    """
     phrases = ", ".join('"%s"' % p.replace('"', '\\"') for p in cfg.wake.phrases)
     return TEMPLATE.format(
         url=cfg.server.url,
         token=cfg.server.token,
-        wake_enabled="true" if cfg.wake.enabled else "false",
+        timeout_sec=_num(cfg.server.timeout_sec),
+        wake_enabled=_bool(cfg.wake.enabled),
         phrases=phrases,
         silence_sec=_num(cfg.recording.silence_sec),
         warn_sec=_num(cfg.recording.silence_warn_sec),
         max_sec=_num(cfg.recording.max_sec),
+        auto_gain=_bool(cfg.recording.auto_gain),
+        hotkey_enabled=_bool(cfg.hotkey.enabled),
         keycode=cfg.hotkey.keycode,
+        typer=cfg.output.typer,
+        notify=_bool(cfg.output.notify),
+        history=_bool(cfg.output.history),
     )
+
+
+def dump(cfg: Config, *, mask_token: bool = False) -> str:
+    """Every effective value as TOML, one line per field.
+
+    `vani config show` has to be trustworthy when something is behaving oddly,
+    so this is generated from the dataclasses rather than from a template: a
+    setting cannot be silently absent from the output, and a field added later
+    shows up here without anyone remembering to update a string.
+    """
+    out: list[str] = []
+    for name in ("server", "wake", "recording", "hotkey", "output"):
+        section = getattr(cfg, name)
+        out.append(f"[{name}]")
+        for spec in fields(section):
+            value = getattr(section, spec.name)
+            if mask_token and (name, spec.name) == ("server", "token") and value:
+                value = "***"
+            out.append(f"{spec.name} = {_toml(value)}")
+        out.append("")
+    if os.environ.get("VANI_TOKEN"):
+        out.append("# note: $VANI_TOKEN is set and overrides server.token above")
+    return "\n".join(out)
+
+
+def _toml(value: Any) -> str:
+    if isinstance(value, bool):  # before int: bool is a subclass of it
+        return _bool(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml(v) for v in value) + "]"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return _num(value)
+    return '"%s"' % str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _bool(value: bool) -> str:
+    return "true" if value else "false"
 
 
 def _num(value: float) -> str:

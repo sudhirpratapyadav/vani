@@ -76,7 +76,8 @@ def _config_checks() -> list[Check]:
         return checks + [Check("config contents", FAIL, str(exc))]
 
     try:
-        checks.append(Check("api token", OK if cfg.require_token() else FAIL))
+        cfg.require_token()  # raises when there is none; never returns empty
+        checks.append(Check("api token", OK))
     except ConfigError as exc:
         checks.append(Check("api token", FAIL, str(exc)))
     checks.append(Check("server url", OK, cfg.server.url))

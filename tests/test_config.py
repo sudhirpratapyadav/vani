@@ -1,6 +1,7 @@
 """Config parsing, validation, and the legacy import."""
 from __future__ import annotations
 
+import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
@@ -135,6 +136,47 @@ class ConfigLoadTest(unittest.TestCase):
         self.assertEqual(rewritten.server.url, original.server.url)
         self.assertEqual(rewritten.wake.phrases, original.wake.phrases)
         self.assertEqual(rewritten.recording.silence_sec, original.recording.silence_sec)
+        self.assertIs(rewritten.recording.auto_gain, original.recording.auto_gain)
+
+
+class DumpTest(unittest.TestCase):
+    """`vani config show` has to report what the daemon will really use."""
+
+    def write(self, text: str) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config.toml"
+        tmp.write_text(text)
+        return tmp
+
+    def test_dump_shows_customised_values_not_defaults(self):
+        cfg = config.load(self.write(
+            '[server]\ntimeout_sec = 45\n[output]\ntyper = "stdout"\n'
+            "type_delay_ms = 40\n[recording]\nmin_sec = 1.5\n"))
+        text = config.dump(cfg)
+        self.assertIn("timeout_sec = 45", text)
+        self.assertIn('typer = "stdout"', text)
+        self.assertIn("type_delay_ms = 40", text)
+        self.assertIn("min_sec = 1.5", text)
+
+    def test_dump_covers_every_field(self):
+        cfg = Config()
+        text = config.dump(cfg)
+        for section in ("server", "wake", "recording", "hotkey", "output"):
+            self.assertIn(f"[{section}]", text)
+            for spec in dataclasses.fields(getattr(cfg, section)):
+                self.assertIn(f"{spec.name} = ", text)
+
+    def test_dump_roundtrips_through_the_loader(self):
+        original = config.load(self.write(SAMPLE))
+        rewritten = config.load(self.write(config.dump(original)))
+        self.assertEqual(dataclasses.astuple(rewritten.recording),
+                         dataclasses.astuple(original.recording))
+        self.assertEqual(rewritten.server.token, original.server.token)
+        self.assertEqual(rewritten.wake.phrases, original.wake.phrases)
+
+    def test_dump_masks_the_token_on_request(self):
+        cfg = config.load(self.write('[server]\ntoken = "supersecret"'))
+        self.assertIn("supersecret", config.dump(cfg))
+        self.assertNotIn("supersecret", config.dump(cfg, mask_token=True))
 
 
 class LegacyImportTest(unittest.TestCase):

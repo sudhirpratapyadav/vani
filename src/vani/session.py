@@ -3,7 +3,7 @@
 This is the core of the daemon and it deliberately knows nothing about
 microphones, HTTP, or notifications: it takes audio chunks and a hotkey signal,
 and hands a finished clip to a callback. That keeps it exercisable offline —
-see `vani daemon --test-wav` and tests/test_session.py.
+see `vani start --test-wav` and tests/test_session.py.
 
 Silence detection adapts to the room. While idle, an exponential average of the
 input level tracks the ambient noise floor, and speech is anything a few times

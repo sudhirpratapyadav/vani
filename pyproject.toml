@@ -31,7 +31,9 @@ dev = ["pytest>=7"]
 vani = "vani.cli:main"
 
 [project.urls]
-Documentation = "https://github.com/sudhir/vani#readme"
+Homepage = "https://github.com/sudhirpratapyadav/vani"
+Documentation = "https://github.com/sudhirpratapyadav/vani#readme"
+Issues = "https://github.com/sudhirpratapyadav/vani/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
