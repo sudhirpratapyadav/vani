@@ -179,6 +179,47 @@ class SessionTest(unittest.TestCase):
         self.feed(session, silence(5.0, amplitude=1))
         self.assertGreaterEqual(session.speech_threshold, 350.0)
 
+    # -- quiet microphones -------------------------------------------------
+    #
+    # A Bluetooth headset in HFP mode records so quietly that speech peaks
+    # around RMS 430 — under the 350 floor once the softer syllables are
+    # counted, so most of a sentence read as silence and recordings were sent
+    # mid-sentence. Measured from a real clip: raw speech max 429, median 2.
+
+    def quiet_mic_session(self) -> Session:
+        """A session that has idled long enough to learn a very quiet room,
+        the way the daemon does before anyone speaks to it."""
+        session = self.make(ScriptedSpotter())  # never fires; we use the key
+        self.feed(session, silence(10.0, amplitude=3))
+        session.on_hotkey()
+        return session
+
+    def test_quiet_speech_is_not_mistaken_for_silence(self):
+        session = self.quiet_mic_session()
+        # amplitude 600 -> RMS ~424, i.e. an HFP headset at normal speaking
+        # volume, with a very quiet room between phrases.
+        self.feed(session, tone(4.0, amplitude=600) + silence(0.3, amplitude=3))
+        self.assertTrue(session.recording, "quiet speech ended the recording")
+        self.assertEqual(self.clips, [], "sent a clip while still speaking")
+
+    def test_a_quiet_device_still_stops_on_real_silence(self):
+        session = self.quiet_mic_session()
+        self.feed(session, tone(1.0, amplitude=600) + silence(1.5, amplitude=3))
+        self.assertEqual(len(self.clips), 1)
+        self.assertEqual(self.events[-1].detail, "1s silence")
+
+    def test_the_floor_still_applies_to_a_normal_microphone(self):
+        session = self.make(ScriptedSpotter(fire_after=1))
+        self.feed(session, silence(0.2) + tone(1.0, amplitude=12000))
+        # Loud speech must not drag the bar down to where room noise passes.
+        self.assertGreaterEqual(session.speech_threshold, 350.0)
+
+    def test_noise_only_input_cannot_read_as_continuous_speech(self):
+        session = self.make(ScriptedSpotter())
+        session.on_hotkey()
+        self.feed(session, silence(3.0, amplitude=20))
+        self.assertEqual(self.clips, [], "noise alone produced a clip")
+
 
 class AudioTest(unittest.TestCase):
     def test_peak_and_rms(self):

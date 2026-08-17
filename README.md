@@ -102,9 +102,15 @@ mic ──> arecord ──> vani daemon
 
 Design notes worth knowing before changing things:
 
-- **The silence threshold adapts.** A fixed threshold works at a desk and fails
-  on a train, so the noise floor is tracked as an exponential average while
-  idle and speech is anything ~3.5× louder (with a hard floor).
+- **The silence threshold adapts, in two directions.** A fixed threshold works
+  at a desk and fails on a train, so the noise floor is tracked as an
+  exponential average while idle and speech is anything ~3.5× louder. The hard
+  floor under that (`recording.min_speech_level`) assumes a normally scaled
+  microphone, which is not safe: a Bluetooth headset in HFP mode delivers
+  speech peaking near RMS 430, so most of a sentence fell under the old fixed
+  350 and recordings were sent mid-sentence. The floor therefore also scales
+  down to a quarter of the loudest speech actually heard, which leaves loud
+  microphones behaving exactly as before.
 - **The media key is read from raw X input events**, not a desktop shortcut. A
   GNOME custom shortcut on an XF86 media keysym silently never fired, and
   `XGrabKey` delivered exactly one event; `xinput test-xi2 --root` has been
@@ -138,6 +144,8 @@ prints the effective values with the token masked.
 | `recording.silence_warn_sec` | `1` | silence before the countdown appears |
 | `recording.max_sec` | `120` | hard limit on one recording |
 | `recording.auto_gain` | `true` | amplify quiet input before sending |
+| `recording.speech_factor` | `3.5` | how far above the noise floor counts as speech |
+| `recording.min_speech_level` | `350` | absolute bar for speech; lower for a quiet mic |
 | `hotkey.enabled` / `.keycode` | `true` / `171` | the watched key |
 | `output.typer` | `auto` | `xdotool`, `ydotool`, `clipboard`, `stdout` |
 | `output.notify` / `.history` | `true` | desktop notifications / transcript log |
@@ -176,7 +184,10 @@ them directly. Then:
   about success — see [Wayland](#wayland) for the ydotool version trap.
 - **Recordings cut off mid-sentence** — raise `recording.silence_sec`, or the
   room is loud enough that the adaptive threshold is treating speech as silence;
-  `vani start` in a terminal logs the countdown decisions.
+  `vani start` in a terminal logs the countdown decisions. If the microphone is
+  a very quiet one (a Bluetooth headset in HFP mode, say — `vani doctor` and the
+  daemon log both name the device), speech may be sitting under
+  `recording.min_speech_level`; lower it and see [How it works](#how-it-works).
 - **Logs** — `journalctl --user -u vani-daemon -f` (the daemon logs to the
   journal; see `systemd/vani-daemon.service` for why not to a file).
 

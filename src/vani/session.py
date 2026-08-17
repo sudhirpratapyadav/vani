@@ -17,16 +17,21 @@ from typing import Callable
 from . import audio
 from .config import Config
 
-#: Multiple of the ambient noise floor that counts as speech.
-SPEECH_FACTOR = 3.5
-#: Never treat anything below this as speech, however quiet the room is.
-MIN_SPEECH_LEVEL = 350.0
 #: Ceiling on what the idle average will accept as "noise floor".
 NOISE_CEILING = 4000.0
 #: Smoothing for the noise-floor average (per chunk).
 NOISE_ALPHA = 0.03
 #: Countdown updates below this delta are not worth a redraw.
 COUNTDOWN_STEP = 0.3
+#: Fraction of the loudest recent speech that still counts as speech, used when
+#: the device is quieter than `recording.min_speech_level` assumes.
+QUIET_DEVICE_FRACTION = 0.25
+#: However quiet the input, never drop the bar below this — otherwise a stream
+#: carrying nothing but noise would read as continuous speech and never stop.
+ABSOLUTE_MIN_SPEECH_LEVEL = 40.0
+#: Per-chunk decay of the loudest-speech envelope, so one cough near the start
+#: cannot hold the threshold high for the rest of the recording.
+SPEECH_PEAK_DECAY = 0.995
 
 
 @dataclass
@@ -70,6 +75,9 @@ class Session:
         self._had_speech = False
         self._silence_bytes = 0
         self._countdown_shown = -1.0
+        #: Decaying maximum of recent chunk levels; calibrates the threshold to
+        #: however loud this microphone actually is. See speech_threshold.
+        self.speech_peak = 0.0
 
     @property
     def buffered_sec(self) -> float:
@@ -77,7 +85,23 @@ class Session:
 
     @property
     def speech_threshold(self) -> float:
-        return max(self.noise_floor * SPEECH_FACTOR, MIN_SPEECH_LEVEL)
+        """The level a chunk must reach to count as speech.
+
+        Two independent guards, whichever is higher: a multiple of the ambient
+        noise floor (handles a loud room) and an absolute floor (handles a dead
+        silent one). The absolute floor assumes a normally scaled microphone,
+        which is not a safe assumption — a Bluetooth headset in HFP mode
+        delivers speech peaking near RMS 400, well under the default 350 once
+        the quieter syllables are counted, so every pause between words looked
+        like silence and recordings were cut off mid-sentence. So the floor
+        also scales down to a fraction of the loudest speech actually heard.
+        """
+        rec = self.cfg.recording
+        floor = rec.min_speech_level
+        if self.speech_peak > 0:  # only once we know how loud this mic runs
+            floor = min(floor, max(self.speech_peak * QUIET_DEVICE_FRACTION,
+                                   ABSOLUTE_MIN_SPEECH_LEVEL))
+        return max(self.noise_floor * rec.speech_factor, floor)
 
     # -- inputs ------------------------------------------------------------
 
@@ -104,6 +128,9 @@ class Session:
 
         self._buf.append(chunk)
         self._buflen += len(chunk)
+        # Updated before the comparison so the first loud chunk raises the bar
+        # for the quiet ones that follow it, not the other way round.
+        self.speech_peak = max(level, self.speech_peak * SPEECH_PEAK_DECAY)
 
         if level >= self.speech_threshold:
             self._had_speech = True

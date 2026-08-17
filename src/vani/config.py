@@ -57,6 +57,11 @@ class RecordingConfig:
     keep_tail_sec: float = 0.4
     #: Capture rate; the API expects 16 kHz mono.
     sample_rate: int = 16000
+    #: Speech is this many times louder than the tracked ambient noise floor.
+    speech_factor: float = 3.5
+    #: Absolute level speech must clear in a silent room. Lower it for a quiet
+    #: microphone; vani also scales it down automatically (see session.py).
+    min_speech_level: float = 350.0
     #: Amplify quiet input before sending (helps Bluetooth headsets in HFP mode).
     auto_gain: bool = True
 
@@ -214,7 +219,8 @@ def _validate(cfg: Config) -> None:
     r = cfg.recording
     if r.silence_warn_sec > r.silence_sec:
         raise ConfigError("recording.silence_warn_sec must not exceed silence_sec")
-    for name in ("silence_sec", "max_sec", "min_sec", "sample_rate"):
+    for name in ("silence_sec", "max_sec", "min_sec", "sample_rate",
+                 "speech_factor", "min_speech_level"):
         if getattr(r, name) <= 0:
             raise ConfigError(f"recording.{name} must be positive")
     if r.max_sec <= r.min_sec:
