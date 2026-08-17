@@ -52,7 +52,7 @@ serving v1 dictation, untouched.
 |---|---|---|---|
 | **stopped** | closed | nothing | the user starts it |
 | **listening** | open locally | **nothing sent** | speech is detected |
-| **active** | open | streaming | no speech for N minutes |
+| **active** | open | streaming | no speech for 30 s |
 
 **stopped** is the explicit user control, and it is the privacy model as much as
 the UX: the mic and the socket are both closed, so nothing is captured rather
@@ -74,9 +74,13 @@ Three properties matter more than the detector itself:
   pauses between sentences. Chopping those out would hand the model
   discontinuous audio and destroy the boundaries it uses to punctuate. The gate
   asks "is this person talking at all", not "is this frame speech".
-- **Asymmetric thresholds.** Fast to activate, slow to release: minutes of
-  quiet before dropping back to listening, so an ordinary conversational pause
-  — or thinking mid-sentence — never flips it.
+- **Asymmetric thresholds.** Fast to activate, slow to release:
+  `stream.inactive_after_sec = 30` before dropping back to listening. Thirty
+  seconds is comfortably longer than thinking mid-sentence or reading something
+  before carrying on, so an ordinary pause never flips it. The cost of a long
+  release is the trailing silence streamed after every burst, which scales with
+  how *many* times you start talking, not how long you talk — a hundred separate
+  bursts a day adds about fifty minutes, still small against four hours.
 - **Pre-roll.** Keep the last second of audio in a ring buffer at all times and
   send it on activation. Without it the gate eats the first word of every
   session, which is the classic way this feature ships broken. It is the same
@@ -88,6 +92,18 @@ HFP headset peaks around RMS 430. If that proves too easily fooled by keyboards,
 fans, or music, a small neural VAD (Silero, ~1 MB, CPU real-time) is the drop-in
 upgrade. Keep the detector behind an interface so swapping it is a one-line
 change, exactly as `wake.py` does for spotters today.
+
+One consequence of streaming the 30 s tail: the model is fed pure silence at the
+end of every burst, and ASR models are prone to inventing text on silence. So the
+gate's verdict is worth keeping downstream as well as upstream — **discard
+transcript text produced during a stretch the local detector scored as silence.**
+The VAD already knows nobody was talking; that makes it a free correctness check
+on the model's output, not just a bandwidth control. Whether Voxtral-Realtime
+actually hallucinates here is a phase 1 measurement, not an assumption.
+
+Closing an active period should send `input_audio_buffer.commit {"final": true}`
+so the utterance is finalised and `transcription.done` carries the full text,
+rather than dropping the socket mid-thought.
 
 This is also the part of v2 that is fully testable offline: feed a WAV of a real
 day through the gate and assert on the state transitions, no mic and no network
