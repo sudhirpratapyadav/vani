@@ -7,6 +7,7 @@ import unittest
 import urllib.error
 from unittest import mock
 
+from vani import client
 from vani.client import Client, TranscribeError
 from vani.config import Config, ConfigError
 
@@ -72,6 +73,15 @@ class ClientTest(unittest.TestCase):
     def test_health(self):
         with mock.patch("urllib.request.urlopen", return_value=response({"ready": True})):
             self.assertEqual(Client(config()).health(), {"ready": True})
+
+    def test_every_request_names_itself(self):
+        """Cloudflare 403s the default Python-urllib agent, healthz included."""
+        with mock.patch("urllib.request.urlopen", return_value=response({"text": "x"})) as op:
+            Client(config()).transcribe(b"wav")
+            Client(config()).health()
+        for call in op.call_args_list:
+            self.assertEqual(call[0][0].get_header("User-agent"), client.USER_AGENT)
+            self.assertNotIn("Python-urllib", call[0][0].get_header("User-agent"))
 
 
 if __name__ == "__main__":

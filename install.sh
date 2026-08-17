@@ -38,16 +38,42 @@ fi
 # ----------------------------------------------------------------- install
 say "Installing the vani package"
 PIP_USER_BIN="$HOME/.local/bin"
+export PATH="$PIP_USER_BIN:$PATH"
+WAKE_INSTALLED=0
+
 if command -v pipx >/dev/null; then
-    pipx install --force .
+    # The extra has to go in the same venv: a `pip install --user vosk` is not
+    # importable from inside a pipx-managed environment.
+    if pipx install --force ".[wake]"; then
+        WAKE_INSTALLED=1
+    else
+        warn "the wake-word extra failed to build — installing without it"
+        pipx install --force .
+    fi
+elif python3 -m venv "${BUILD_DIR:=$(mktemp -d)}/venv" 2>/dev/null; then
+    # Not `pip install --user .`: Ubuntu 22.04's system pip puts
+    # /usr/lib/python3/dist-packages (setuptools 59, which predates PEP 621)
+    # ahead of the setuptools it fetches for the build, so [project] is ignored
+    # and the result is an UNKNOWN-0.0.0 package with no `vani` command and no
+    # warning. Building the wheel in a throwaway venv gets a setuptools new
+    # enough to read pyproject.toml.
+    trap 'rm -rf "$BUILD_DIR"' EXIT
+    "$BUILD_DIR/venv/bin/pip" -q install --upgrade pip setuptools wheel
+    "$BUILD_DIR/venv/bin/pip" -q wheel --no-deps -w "$BUILD_DIR/dist" .
+    python3 -m pip install --user --force-reinstall --no-deps "$BUILD_DIR"/dist/vani-*.whl
 else
+    warn "python3-venv is missing — falling back to a direct pip install"
+    warn "if that yields 'UNKNOWN-0.0.0': sudo apt install python3-venv, then rerun"
     python3 -m pip install --user --upgrade .
 fi
-export PATH="$PIP_USER_BIN:$PATH"
-command -v vani >/dev/null || warn "$PIP_USER_BIN is not on your PATH — add it to ~/.profile"
+
+command -v vani >/dev/null \
+    || warn "no vani command after install — is $PIP_USER_BIN on your PATH?"
 
 say "Installing the wake-word engine (optional)"
-if python3 -c 'import vosk' 2>/dev/null; then
+if ((WAKE_INSTALLED)); then
+    echo "  installed alongside vani"
+elif python3 -c 'import vosk' 2>/dev/null; then
     echo "  vosk already installed"
 else
     python3 -m pip install --user vosk || warn "vosk install failed — hotkey dictation still works"

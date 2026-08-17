@@ -12,7 +12,13 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from . import __version__
 from .config import Config
+
+#: Sent on every request. Not cosmetic: the API sits behind Cloudflare, which
+#: answers the default "Python-urllib/3.x" agent with 403 before the request
+#: ever reaches the tunnel — every call fails, healthz included.
+USER_AGENT = f"vani/{__version__}"
 
 
 class TranscribeError(Exception):
@@ -31,6 +37,7 @@ class Client:
             headers={
                 "Authorization": "Bearer " + self.cfg.require_token(),
                 "Content-Type": "audio/wav",
+                "User-Agent": USER_AGENT,
             },
         )
         try:
@@ -50,8 +57,10 @@ class Client:
         return str(payload["text"]).strip()
 
     def health(self) -> dict[str, Any]:
+        req = urllib.request.Request(
+            self.cfg.health_url, headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(self.cfg.health_url, timeout=10) as r:
+            with urllib.request.urlopen(req, timeout=10) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as exc:
             raise TranscribeError(_http_message(exc)) from None

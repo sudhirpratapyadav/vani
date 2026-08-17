@@ -156,7 +156,6 @@ xinput test-xi2 --root | grep -A2 RawKeyPress
 ~/.config/vani/config.toml     configuration (600)
 ~/.local/share/vani/           wake-word model
 ~/.cache/vani/history.log      transcripts
-~/.cache/vani/daemon.log       daemon output under systemd
 ~/.cache/vani/last.wav         last clip sent, for debugging
 $XDG_RUNTIME_DIR/vani/         status file and pidfiles
 ```
@@ -176,7 +175,8 @@ them directly. Then:
 - **Recordings cut off mid-sentence** — raise `recording.silence_sec`, or the
   room is loud enough that the adaptive threshold is treating speech as silence;
   `vani start` in a terminal logs the countdown decisions.
-- **Logs** — `journalctl --user -u vani-daemon -f` or `~/.cache/vani/daemon.log`.
+- **Logs** — `journalctl --user -u vani-daemon -f` (the daemon logs to the
+  journal; see `systemd/vani-daemon.service` for why not to a file).
 
 ### Wayland
 

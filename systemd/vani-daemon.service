@@ -7,15 +7,17 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStartPre=/bin/mkdir -p %h/.cache/vani
 ExecStart=%h/.local/bin/vani start
 Restart=on-failure
 RestartSec=5
 # DISPLAY/XAUTHORITY normally arrive via the session's
 # `systemctl --user import-environment`; this is the fallback.
 Environment=DISPLAY=:0
-StandardOutput=append:%h/.cache/vani/daemon.log
-StandardError=inherit
+# Logging goes to the journal (`journalctl --user -u vani-daemon -f`). Not to a
+# file: systemd opens StandardOutput= before it runs anything in the unit, so
+# `append:%h/.cache/vani/daemon.log` fails with 209/STDOUT on a fresh install
+# where that directory does not exist yet — and an ExecStartPre=mkdir cannot
+# fix it, because it is subject to the same redirection.
 
 [Install]
 WantedBy=default.target
