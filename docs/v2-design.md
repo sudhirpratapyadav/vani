@@ -20,6 +20,9 @@ time.
 ```
 mic (on/off, user-controlled)
   │
+  ├─ voice activity gate ............. local; coarse, minutes-scale
+  │    └─ nothing goes upstream unless someone is actually talking
+  │
   ├─ WebSocket ....................... wss://ai-stream.lsquarelabs.com/v1/realtime
   │    └─ 200 ms PCM16 frames up, transcription.delta words down
   │
@@ -43,18 +46,52 @@ request ends and the next begins — the socket is the session. The batch
 `/transcribe` endpoint on `ai.lsquarelabs.com` stays exactly where it is,
 serving v1 dictation, untouched.
 
-## Start / stop
+## Three states
 
-One explicit control, and it is the privacy model as well as the UX:
+| State | Mic | Upstream | Leaves when |
+|---|---|---|---|
+| **stopped** | closed | nothing | the user starts it |
+| **listening** | open locally | **nothing sent** | speech is detected |
+| **active** | open | streaming | no speech for N minutes |
 
-- **Off** — the mic is closed and the socket is closed. Nothing is captured,
-  nothing is sent, nothing reaches the agent. Not a filter, not a mute flag
-  checked downstream: no audio leaves the machine because none is read.
-- **On** — the socket is open and the transcript is live.
+**stopped** is the explicit user control, and it is the privacy model as much as
+the UX: the mic and the socket are both closed, so nothing is captured rather
+than captured-and-filtered. No audio leaves the machine because none is read,
+and no prompt reaches Claude at all — not a prompt telling it to ignore things.
 
-The equivalent framing is that "off" means *no prompt is sent to Claude at all*
-— not a prompt saying to ignore things. State must be obvious at a glance from
-the tray, because a listening indicator nobody trusts is worse than none.
+**listening → active** is a voice activity gate, and its whole job is to be
+*coarse*. Over a day a person speaks maybe four hours out of twenty-four, so the
+other twenty are silence nobody should pay to transcribe:
+
+```
+24 h continuous   86,400 s × 32 KB/s ≈ 2.76 GB/day   GPU busy 100%
+~4 h gated        14,400 s × 32 KB/s ≈ 461 MB/day    GPU busy ~17%
+```
+
+Three properties matter more than the detector itself:
+
+- **It does not micro-gate.** Once active, everything streams — including the
+  pauses between sentences. Chopping those out would hand the model
+  discontinuous audio and destroy the boundaries it uses to punctuate. The gate
+  asks "is this person talking at all", not "is this frame speech".
+- **Asymmetric thresholds.** Fast to activate, slow to release: minutes of
+  quiet before dropping back to listening, so an ordinary conversational pause
+  — or thinking mid-sentence — never flips it.
+- **Pre-roll.** Keep the last second of audio in a ring buffer at all times and
+  send it on activation. Without it the gate eats the first word of every
+  session, which is the classic way this feature ships broken. It is the same
+  lesson as v1's `keep_tail_sec`, at the other end of the clip.
+
+The detector can start as the adaptive noise-floor logic already in `audio.py`
+and `session.py` — including the quiet-microphone fix, which matters because an
+HFP headset peaks around RMS 430. If that proves too easily fooled by keyboards,
+fans, or music, a small neural VAD (Silero, ~1 MB, CPU real-time) is the drop-in
+upgrade. Keep the detector behind an interface so swapping it is a one-line
+change, exactly as `wake.py` does for spotters today.
+
+This is also the part of v2 that is fully testable offline: feed a WAV of a real
+day through the gate and assert on the state transitions, no mic and no network
+— the property that makes `session.py` worth keeping.
 
 ## The agent
 
