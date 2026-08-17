@@ -18,13 +18,10 @@ time.
 ## Shape
 
 ```
-mic (never stops)
+mic (on/off, user-controlled)
   │
-  ├─ windowing + energy gate ......... local, no ASR
-  │    └─ fixed windows, silent ones dropped before they leave the machine
-  │
-  ├─ Voxtral /transcribe ............. every non-silent window
-  │    └─ the existing v1 client, unchanged
+  ├─ WebSocket ....................... wss://ai-stream.lsquarelabs.com/v1/realtime
+  │    └─ 200 ms PCM16 frames up, transcription.delta words down
   │
   ├─ rolling transcript .............. local, timestamped, auto-expiring
   │
@@ -34,15 +31,30 @@ mic (never stops)
   └─ executor ........................ tiered permissions + audit log
 ```
 
-The energy gate is **not** speech recognition and not vosk — it is the RMS and
-adaptive-noise-floor maths already in `audio.py` and `session.py`, deciding
-only "is anything happening". It exists for transcript quality, not to save
-money: ASR models hallucinate confidently on silence, and a transcript salted
-with invented sentences poisons every decision made downstream of it.
+**The ASR is genuinely streaming**, which removes a whole layer that an earlier
+draft of this document assumed. `mistralai/Voxtral-Mini-4B-Realtime-2602` runs
+on vLLM behind an OpenAI-Realtime-style WebSocket: send `input_audio_buffer.append`
+frames, receive `transcription.delta` events word by word. Measured end to end
+from the desktop through the Cloudflare tunnel, on a 6.7 s clip: connect 0.6 s,
+first delta 0.7 s, and words landing **0.3–0.5 s behind the speech**.
 
-Windowing is unavoidable regardless: Voxtral is a batch model, so something has
-to decide where one request ends and the next begins. There is no streaming
-mode to fall back on — "live text" here means utterance latency, ~1–3 s.
+So there is no windowing, no energy gate, and no decision about where one
+request ends and the next begins — the socket is the session. The batch
+`/transcribe` endpoint on `ai.lsquarelabs.com` stays exactly where it is,
+serving v1 dictation, untouched.
+
+## Start / stop
+
+One explicit control, and it is the privacy model as well as the UX:
+
+- **Off** — the mic is closed and the socket is closed. Nothing is captured,
+  nothing is sent, nothing reaches the agent. Not a filter, not a mute flag
+  checked downstream: no audio leaves the machine because none is read.
+- **On** — the socket is open and the transcript is live.
+
+The equivalent framing is that "off" means *no prompt is sent to Claude at all*
+— not a prompt saying to ignore things. State must be obvious at a glance from
+the tray, because a listening indicator nobody trusts is worse than none.
 
 ## The agent
 
@@ -89,14 +101,14 @@ and it is the question this system will generate most.
 ## Retention
 
 Transcript is local, timestamped, and auto-expires after N days. Audio is
-discarded the moment its window has been transcribed — nothing is ever written
-to disk. A hard mute must stop capture at the source, not just filter
-downstream, and it must be obvious from the tray whether the mic is live.
+never written to disk at all — frames go straight to the socket and are gone.
+Stopping is the hard mute described above: capture ends at the source.
 
 Note this is a real change from v1's privacy property. v1 advertises that audio
-only leaves the machine once a recording has started; in v2 every non-silent
-window is sent. That is a deliberate choice, and the README must say so plainly
-rather than carrying v1's claim forward.
+only leaves the machine once a recording has started; in v2 everything heard
+while the mic is on is streamed. That is a deliberate choice — the start/stop
+control above is what bounds it — and the README must say so plainly rather
+than carrying v1's claim forward.
 
 ## What will actually be hard
 
@@ -115,15 +127,16 @@ rather than carrying v1's claim forward.
 
 ## Phases
 
-**1 — the ear.** Capture, windowing, energy gate, Voxtral, rolling transcript,
-`vani listen` to tail it. No agent, no actions.
+**1 — the ear.** Capture, the realtime WebSocket, rolling transcript, start/stop,
+`vani listen` to tail it live. No agent, no actions.
 
 Ship this first and run it for days, because it produces the one thing that
 cannot be obtained any other way: **real numbers about this specific room.**
 How many hours of speech a day. How many utterances were actually addressed to
 an agent. What Voxtral's quality looks like on a Bluetooth HFP headset across a
-whole day rather than one clip. What fraction of windows are silence. Every
-decision in phase 2 depends on those numbers, and right now nobody has them.
+whole day rather than one clip. How the socket behaves over hours — drops,
+reconnects, drift. Every decision in phase 2 depends on those numbers, and
+right now nobody has them.
 
 **2 — the brain.** `ClaudeSDKClient` fed from the transcript. Inform-tier tools
 only. Develop addressivity by replaying phase 1's log — no mic needed, the same
@@ -135,8 +148,10 @@ trick that makes `session.py` testable today.
 
 ## Reuse
 
-Kept as-is: `audio.py`, `client.py`, `config.py`, `paths.py`, `state.py`,
+Kept as-is: `audio.py` (capture), `config.py`, `paths.py`, `state.py`,
 `output.py`, `notify.py`, `doctor.py`, and the install/systemd scaffolding.
+`client.py` stays for v1's batch endpoint; v2 needs a new WebSocket client
+beside it.
 
 Replaced: `session.py`. Its wake/record/silence machine is precisely the
 event-shaped assumption v2 drops. The new state machine should inherit its best
@@ -145,3 +160,43 @@ is therefore testable from a WAV file with no network.
 
 Unchanged: everything v1 does. Dictation remains the thing that works when the
 agent is off, and `vani toggle` should keep working whatever v2 is doing.
+
+## Running the ASR servers
+
+Both live in the same Slurm holder on dgx2, on separate GPUs, and both are
+published by the cloudflared tunnel on the VPS:
+
+| hostname | port | model | used by |
+|---|---|---|---|
+| `ai.lsquarelabs.com` | 8000 | Voxtral batch `/transcribe` | v1 dictation |
+| `ai-stream.lsquarelabs.com` | 8001 | Voxtral-Mini-4B-Realtime, vLLM | v2 |
+
+The realtime server needs two things that are easy to get wrong, and cost an
+afternoon to rediscover:
+
+```sh
+# on svs_ald (the ihub login node), inside the holder, on a free GPU
+cd ~/sudhir/voice_api
+bash ~/use_instructions/run_in_holder.sh <HOLDER_JOBID> 1 ~/sudhir/voice_api/vllm_realtime.log \
+  env LD_LIBRARY_PATH=$PWD/cuda-compat/usr/local/cuda-13.0/compat:/ihub/apps/python/3.10/lib \
+      HF_HOME=$PWD/hf_cache \
+  .venv_vllm/bin/vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 \
+      --host 0.0.0.0 --port 8001 --enforce-eager
+```
+
+1. **`cuda-compat` must be first on `LD_LIBRARY_PATH`.** dgx2's driver reports
+   CUDA 12040, which torch rejects as too old; the compat `libcuda.so` in that
+   directory is the fix. Without it: *"The NVIDIA driver on your system is too
+   old"*. `/ihub/apps/python/3.10/lib` is still needed after it, for
+   `libpython3.10.so.1.0`.
+2. **The three flashinfer packages must be the same version.** vLLM 0.27.1
+   hard-imports flashinfer, `flashinfer-cubin` publishes nothing above 0.6.13,
+   and `flashinfer-jit-cache` only exists as `+cu130` on the flashinfer index —
+   so the working set is `flashinfer-python`, `flashinfer-cubin`, and
+   `flashinfer-jit-cache` all at 0.6.13, the last from
+   `--extra-index-url https://flashinfer.ai/whl/cu130`.
+
+**Always install into `.venv_vllm` with `--no-deps`.** `flashinfer-python`
+declares an older torch, so a plain install silently drags torch 2.13 → 2.9 and
+clobbers cu13 NCCL with a cu12 build, which then fails as
+`undefined symbol: ncclCommResume`. `--no-deps` makes that impossible.
