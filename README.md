@@ -172,6 +172,10 @@ prints the effective values with the token masked.
 | `recording.speech_factor` | `3.5` | how far above the noise floor counts as speech |
 | `recording.min_speech_level` | `350` | absolute bar for speech; lower for a quiet mic |
 | `hotkey.enabled` / `.keycode` | `true` / `171` | the watched key |
+| `stream.url` | `wss://ai-stream.lsquarelabs.com/v1/realtime` | v2 realtime ASR socket |
+| `stream.inactive_after_sec` | `30` | quiet before the gate stops streaming |
+| `stream.preroll_sec` | `1` | audio replayed on activation, so no clipped first word |
+| `stream.retain_days` | `14` | how long transcript entries are kept |
 | `output.typer` | `auto` | `xdotool`, `ydotool`, `clipboard`, `stdout` |
 | `output.notify` / `.history` | `true` | desktop notifications / transcript log |
 

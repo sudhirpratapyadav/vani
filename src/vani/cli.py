@@ -127,7 +127,9 @@ def _tail(log, lines: int) -> int:
 
     seen = log.read(limit=lines or None)
     for entry in seen:
-        print(f"{entry.stamp}  {entry.text}")
+        # flush: this is a follow command, so it is usually on the left of a
+        # pipe, where block buffering would swallow everything until exit.
+        print(f"{entry.stamp}  {entry.text}", flush=True)
     last = seen[-1].at if seen else 0.0
     try:
         while True:
