@@ -1,14 +1,18 @@
 [Unit]
 # Typing on Wayland goes through ydotool, which talks to this daemon over a
-# socket; without it ydotool falls back to poking /dev/uinput directly and
-# warns about latency. Ubuntu ships the client and the daemon as two packages
-# (ydotool, ydotoold) and no unit for either, hence this one.
+# socket. Ubuntu ships the client and the daemon as two packages and a unit for
+# neither, hence this one.
+#
+# ExecStart is deliberately not an absolute path: systemd resolves a bare name
+# against /usr/local/bin before /usr/bin, so this works both for a distro
+# package and for a build installed under /usr/local (see the README — Ubuntu
+# 22.04's ydotool is too old to type anything).
 Description=ydotoold — uinput backend for ydotool typing
 Before=vani-daemon.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/ydotoold
+ExecStart=ydotoold
 Restart=on-failure
 RestartSec=5
 

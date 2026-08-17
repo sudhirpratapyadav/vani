@@ -171,7 +171,9 @@ them directly. Then:
 - **The media key stopped working**, `BadAccess` in the log — an orphaned
   watcher: `pkill -f "xinput test-xi2"`, then restart the daemon.
 - **Nothing gets typed** — check `vani doctor`'s typing-backend line. On X11
-  that needs `xdotool`.
+  that needs `xdotool`. On Wayland, if the transcript reaches `vani history`
+  but no text appears and the log shows no error, the typing tool is lying
+  about success — see [Wayland](#wayland) for the ydotool version trap.
 - **Recordings cut off mid-sentence** — raise `recording.silence_sec`, or the
   room is loud enough that the adaptive threshold is treating speech as silence;
   `vani start` in a terminal logs the countdown decisions.
@@ -185,18 +187,36 @@ its own daemon and `/dev/uinput` access) and then to the clipboard, so
 transcripts survive even where they can't be typed. Wake words and push-to-talk
 via a desktop shortcut work either way.
 
-For typing, Ubuntu splits ydotool into two packages and ships a unit for
-neither, so `systemd/ydotoold.service` is here:
+For typing you need ydotool **1.0 or newer**, and a daemon to go with it.
+Ubuntu 22.04 ships 0.1.8, which does not work: `ydotoold` segfaults the moment
+a client connects (`status=11/SEGV` in the journal), and without it `ydotool`
+falls back to writing `/dev/uinput` directly, injects nothing, and still exits
+0 — so vani logs a transcript and types nothing, with no error anywhere. Check
+with `apt-cache policy ydotool`; if that says 0.1.8, build it:
 
 ```sh
-sudo apt install ydotool ydotoold      # client and daemon
+sudo apt install cmake scdoc build-essential
+git clone --depth 1 -b v1.0.4 https://github.com/ReimuNotMoe/ydotool
+cmake -S ydotool -B ydotool/build -DCMAKE_BUILD_TYPE=Release
+cmake --build ydotool/build -j"$(nproc)" && sudo cmake --install ydotool/build
+```
+
+That lands in `/usr/local/bin`, ahead of any apt copy. Then:
+
+```sh
 sudo usermod -aG input "$USER"         # /dev/uinput is root:input (re-login)
 cp systemd/ydotoold.service ~/.config/systemd/user/
 systemctl --user enable --now ydotoold
 ```
 
-`ydotool type` should then say *Using ydotoold backend* rather than warning
-that it is unavailable.
+`ydotool type` should then say *Using ydotoold backend*. To confirm keystrokes
+really reach the compositor — without depending on which window has focus —
+send a key the desktop handles globally and watch it act:
+
+```sh
+pactl get-sink-volume @DEFAULT_SINK@   # note the level
+ydotool key 115:1 115:0                # volume up; the level should change
+```
 
 For the key, bind `vani toggle` to a GNOME shortcut — a normal keysym, not an
 XF86 media key, which GNOME accepts and then silently never fires:
