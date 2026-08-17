@@ -148,6 +148,48 @@ class GateTest(unittest.TestCase):
         self.assertGreater(streamed, 12.0, "lost actual speech")
 
 
+class ReleaseTest(unittest.TestCase):
+    """release() exists so a dead socket cannot swallow speech in silence."""
+
+    def setUp(self) -> None:
+        self.cfg = Config()
+        self.cfg.stream.inactive_after_sec = 5.0
+        self.events: list = []
+
+    def make(self) -> Gate:
+        return Gate(self.cfg, self.events.append)
+
+    def feed(self, gate: Gate, pcm: bytes) -> bytes:
+        return b"".join(gate.feed(pcm[i:i + CHUNK_BYTES])
+                        for i in range(0, len(pcm), CHUNK_BYTES))
+
+    def test_release_returns_to_listening(self):
+        gate = self.make()
+        self.feed(gate, silence(0.5) + tone(1.0))
+        self.assertEqual(gate.state, ACTIVE)
+        gate.release("stream ended")
+        self.assertEqual(gate.state, LISTENING)
+        self.assertEqual(self.events[-1].kind, "deactivated")
+        self.assertEqual(self.events[-1].detail, "stream ended")
+
+    def test_release_while_listening_is_a_noop(self):
+        gate = self.make()
+        gate.release("stream ended")
+        self.assertEqual(gate.state, LISTENING)
+        self.assertEqual(self.events, [])
+
+    def test_speech_after_release_opens_a_new_activation(self):
+        """The point of releasing: the next words must reach a fresh socket."""
+        gate = self.make()
+        self.feed(gate, silence(0.5) + tone(1.0))
+        gate.release("stream ended")
+        sent = self.feed(gate, tone(1.0))
+        self.assertEqual(gate.state, ACTIVE)
+        self.assertGreater(len(sent), 0, "speech after a failed stream was lost")
+        self.assertEqual([e.kind for e in self.events],
+                         ["activated", "deactivated", "activated"])
+
+
 class ThresholdTest(unittest.TestCase):
     def test_constants_are_shared_with_the_v1_state_machine(self):
         """One tuning story, not two — session.py is where it is explained."""

@@ -41,6 +41,7 @@ def run(check_server: bool = True) -> int:
     checks += _session_checks(cfg)
     checks += _wake_checks(cfg)
     checks += _service_checks()
+    checks += _stream_checks(cfg, check_server)
     if check_server and cfg is not None:
         checks.append(_server_check(cfg))
 
@@ -155,6 +156,50 @@ def _service_checks() -> list[Check]:
                                 "not enabled — `systemctl --user enable --now "
                                 "vani-daemon.service`"))
     return checks
+
+
+def _stream_checks(cfg: Config | None, check_server: bool) -> list[Check]:
+    """v2 `vani listen`. Warnings only — dictation does not depend on any of it."""
+    from . import listener
+
+    checks: list[Check] = []
+    try:
+        import websockets  # noqa: F401
+    except ModuleNotFoundError:
+        return [Check("websockets", WARN,
+                      "not installed — `pip install --user websockets`; "
+                      "needed only for `vani listen`")]
+    checks.append(Check("websockets", OK))
+
+    pid = listener.is_running()
+    checks.append(Check("listener", OK if pid else WARN,
+                        f"running (pid {pid})" if pid else "not running — `vani listen`"))
+    if check_server and cfg is not None:
+        checks.append(_stream_server_check(cfg))
+    return checks
+
+
+def _stream_server_check(cfg: Config) -> Check:
+    """Probe the realtime endpoint over https — the same host, no handshake."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = cfg.stream.url.replace("wss://", "https://").replace("ws://", "http://")
+    base = url.split("/v1/")[0] + "/v1/models"
+    req = urllib.request.Request(base, headers={"User-Agent": "vani/2"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            names = [m.get("id") for m in json.loads(r.read()).get("data", [])]
+    except urllib.error.HTTPError as exc:
+        return Check("stream server", WARN, f"{base}: HTTP {exc.code}")
+    except (OSError, ValueError) as exc:
+        return Check("stream server", WARN, f"{base}: {exc}")
+    if cfg.stream.model not in names:
+        return Check("stream server", WARN,
+                     f"reachable but serving {names or 'nothing'}, "
+                     f"not {cfg.stream.model}")
+    return Check("stream server", OK, cfg.stream.url)
 
 
 def _server_check(cfg: Config) -> Check:

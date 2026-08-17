@@ -44,6 +44,7 @@ class Listener:
         self._activation_started = 0.0
         self._upstream: "asyncio.Queue[bytes | None]" = asyncio.Queue()
         self._session_task: asyncio.Task | None = None
+        self._dropped = 0
 
     # -- gate callbacks ----------------------------------------------------
 
@@ -53,7 +54,8 @@ class Listener:
             log(f"active (replayed {event.seconds:.1f}s pre-roll)")
             state.set_status(state.RECORDING)
         else:
-            log(f"listening again after {event.seconds:.0f}s")
+            why = f" ({event.detail})" if event.detail else ""
+            log(f"listening again after {event.seconds:.0f}s{why}")
             state.set_status(state.IDLE)
 
     # -- the loop ----------------------------------------------------------
@@ -92,13 +94,21 @@ class Listener:
     # same activation and commit path the daemon uses rather than a copy of it.
 
     async def _route(self, chunk: bytes) -> None:
+        # A stream that died mid-activation must not silently swallow the rest
+        # of what is being said: release the gate so the next words open a
+        # fresh socket, rather than filling a queue nobody is reading.
+        if self.gate.active and self._session_task is not None \
+                and self._session_task.done():
+            self.gate.release("stream ended")
+            await self._close()
+
         was_active = self.gate.active
         send = self.gate.feed(chunk)
 
         if self.gate.active and not was_active:
             self._upstream = asyncio.Queue()
             self._session_task = asyncio.create_task(self._session(self._upstream))
-        if send and self._session_task is not None and not self._session_task.done():
+        if send and self._session_task is not None:
             self._upstream.put_nowait(send)
         if was_active and not self.gate.active:
             await self._close()
@@ -147,7 +157,12 @@ class Listener:
                     try:
                         out.put(chunk, timeout=1)
                     except queue.Full:
-                        pass  # the socket is behind; drop rather than grow
+                        # The socket is behind; drop rather than grow without
+                        # bound — but say so, since dropped audio is a silent
+                        # hole in the transcript otherwise.
+                        self._dropped += 1
+                        if self._dropped % 50 == 1:
+                            log(f"audio backlog: dropped {self._dropped} chunks")
             finally:
                 mic.close()
             if not self.stopping.is_set():

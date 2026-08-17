@@ -155,9 +155,11 @@ def cmd_tray(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     from . import daemon as daemon_module
+    from . import listener
 
     current, countdown = state.read_status()
     pid = daemon_module.is_running()
+    ear = listener.is_running()
     label = {
         state.IDLE: "idle",
         state.RECORDING: "recording",
@@ -166,6 +168,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     }[current]
     print(f"state:  {label}")
     print(f"daemon: {'running (pid %d)' % pid if pid else 'not running'}")
+    if ear:
+        print(f"listen: running (pid {ear})")
     entries = state.read_history(1)
     if entries:
         stamp, text = entries[0]

@@ -87,17 +87,14 @@ async def transcribe(
         utt = Utterance(ws, cfg.stream.model)
         await utt.start()
         parts: list[str] = []
-        sending = True
 
         async def pump() -> None:
-            nonlocal sending
             while True:
                 chunk = await audio_in.get()
                 if chunk is None:
                     break
                 await utt.send(chunk)
             await utt.finish()
-            sending = False
 
         pump_task = asyncio.create_task(pump())
         try:

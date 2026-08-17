@@ -1,0 +1,17 @@
+[Unit]
+# v2: the ambient ear. Independent of vani-daemon — dictation and listening
+# each own their own microphone stream, and either can run without the other.
+Description=vani ambient listener (v2)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/vani listen
+Restart=on-failure
+RestartSec=5
+# Logging goes to the journal (`journalctl --user -u vani-listener -f`); see
+# vani-daemon.service for why not to a file.
+
+[Install]
+WantedBy=default.target

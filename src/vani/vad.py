@@ -48,6 +48,7 @@ class Event:
     """A state change. The daemon logs these; the tests assert on them."""
 
     kind: str        # activated | deactivated
+    detail: str = ""
     seconds: float = 0.0
 
 
@@ -110,7 +111,7 @@ class Gate:
         if self.state == LISTENING:
             self._track_noise(level)
             if level >= self.speech_threshold:
-                return self._activate(chunk)
+                return self._activate(chunk, level)
             self._remember(chunk)
             return b""
 
@@ -123,7 +124,7 @@ class Gate:
         else:
             self._silence_bytes += len(chunk)
             if self.silence_sec >= self.cfg.stream.inactive_after_sec:
-                self._deactivate()
+                self._deactivate("%ss quiet" % _num(self.cfg.stream.inactive_after_sec))
         return chunk
 
     # -- transitions -------------------------------------------------------
@@ -139,21 +140,35 @@ class Gate:
         while self._preroll_bytes > self._preroll_limit and self._preroll:
             self._preroll_bytes -= len(self._preroll.popleft())
 
-    def _activate(self, chunk: bytes) -> bytes:
+    def release(self, detail: str = "") -> None:
+        """Drop back to listening from outside — used when the socket dies.
+
+        Without this a failed stream leaves the gate active and every chunk
+        goes nowhere until the release timer expires, so someone can talk for
+        half a minute into a closed socket with one line in the log.
+        """
+        if self.state == ACTIVE:
+            self._deactivate(detail)
+
+    def _activate(self, chunk: bytes, level: float) -> bytes:
         preroll = b"".join(self._preroll)
         self._preroll.clear()
         self._preroll_bytes = 0
         self.state = ACTIVE
-        self.speech_peak = audio.rms(chunk)
+        self.speech_peak = level
         self._silence_bytes = 0
         self._active_bytes = len(preroll) + len(chunk)
         self.on_event(Event("activated", seconds=len(preroll) / self.bytes_per_sec))
         return preroll + chunk
 
-    def _deactivate(self) -> None:
+    def _deactivate(self, detail: str = "") -> None:
         seconds = self.active_sec
         self.state = LISTENING
         self.speech_peak = 0.0
         self._silence_bytes = 0
         self._active_bytes = 0
-        self.on_event(Event("deactivated", seconds=seconds))
+        self.on_event(Event("deactivated", detail, seconds))
+
+
+def _num(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else str(value)

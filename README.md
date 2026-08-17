@@ -139,7 +139,13 @@ pip install --user websockets          # the only new dependency
 vani listen                            # start listening
 vani listen --tail                     # watch the transcript fill up
 vani listen --test-wav clip.wav -v     # replay a WAV, no microphone needed
+
+systemctl --user enable --now vani-listener   # or run it as a service
 ```
+
+`vani doctor` covers v2 too — whether `websockets` is installed, whether the
+listener is running, and whether the realtime server is actually serving the
+model the config asks for.
 
 Speech goes to a realtime Voxtral on the GPU over a WebSocket and comes back
 word by word, ~0.4 s behind. A coarse voice-activity gate means silence never

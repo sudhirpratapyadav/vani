@@ -98,7 +98,8 @@ if ((WITH_SERVICE)); then
     say "systemd user services"
     units="$HOME/.config/systemd/user"
     mkdir -p "$units"
-    cp systemd/vani-daemon.service systemd/vani-tray.service "$units/"
+    cp systemd/vani-daemon.service systemd/vani-tray.service \
+       systemd/vani-listener.service "$units/"
     systemctl --user daemon-reload
     # Hand the units the X credentials the running session already has.
     systemctl --user import-environment DISPLAY XAUTHORITY 2>/dev/null || true
@@ -115,6 +116,8 @@ if ((WITH_SERVICE)); then
         warn "  sudo apt install python3-gi gir1.2-appindicator3-0.1"
         warn "  systemctl --user enable --now vani-tray.service"
     fi
+    # v2 is opt-in: it listens continuously, which is the user's call to make.
+    echo "  listener (v2): systemctl --user enable --now vani-listener.service"
 fi
 
 say "Checking the installation"
