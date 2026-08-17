@@ -185,6 +185,33 @@ its own daemon and `/dev/uinput` access) and then to the clipboard, so
 transcripts survive even where they can't be typed. Wake words and push-to-talk
 via a desktop shortcut work either way.
 
+For typing, Ubuntu splits ydotool into two packages and ships a unit for
+neither, so `systemd/ydotoold.service` is here:
+
+```sh
+sudo apt install ydotool ydotoold      # client and daemon
+sudo usermod -aG input "$USER"         # /dev/uinput is root:input (re-login)
+cp systemd/ydotoold.service ~/.config/systemd/user/
+systemctl --user enable --now ydotoold
+```
+
+`ydotool type` should then say *Using ydotoold backend* rather than warning
+that it is unavailable.
+
+For the key, bind `vani toggle` to a GNOME shortcut — a normal keysym, not an
+XF86 media key, which GNOME accepts and then silently never fires:
+
+```sh
+P=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/
+gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['$P']"
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$P \
+    name 'vani dictation toggle'
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$P \
+    command "$HOME/.local/bin/vani toggle"
+gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$P \
+    binding '<Super><Alt>d'
+```
+
 ## Development
 
 ```sh

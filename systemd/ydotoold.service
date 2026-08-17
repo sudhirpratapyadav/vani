@@ -1,0 +1,16 @@
+[Unit]
+# Typing on Wayland goes through ydotool, which talks to this daemon over a
+# socket; without it ydotool falls back to poking /dev/uinput directly and
+# warns about latency. Ubuntu ships the client and the daemon as two packages
+# (ydotool, ydotoold) and no unit for either, hence this one.
+Description=ydotoold — uinput backend for ydotool typing
+Before=vani-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ydotoold
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
