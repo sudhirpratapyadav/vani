@@ -111,6 +111,10 @@ class Daemon:
     def on_live_text(self, text: str) -> None:
         """Words arriving mid-recording, on the stream's reader thread."""
         self._live_text = text
+        # Transcribed words are speech, whatever the level detector thinks —
+        # in a rumbly room they are the only evidence that arms the silence
+        # stop and keeps the clip from being discarded as empty.
+        self.session.notice_speech()
         self.notifier.show("● " + _tail(text), 60000, replace=True)
 
     def handle_clip(self, pcm: bytes) -> None:

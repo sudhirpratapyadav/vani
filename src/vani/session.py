@@ -116,6 +116,29 @@ class Session:
         self._start("key press")
         return False
 
+    def notice_speech(self) -> None:
+        """External proof that someone is talking — the streaming ASR
+        returned words for this recording.
+
+        The level detector can be deaf in a room it mishears: a C920 webcam
+        measured ambient RMS ~1650 (85% of it sub-300 Hz fan rumble), which
+        drove the adaptive threshold above actual speech, so no chunk ever
+        counted as speech and the silence stop never armed. Transcribed words
+        are evidence no threshold can argue with, so they feed the same
+        had-speech/silence bookkeeping as a loud chunk.
+
+        Called from the stream's reader thread while feed() runs on the main
+        thread: attribute writes only, safe under the GIL.
+        """
+        if not self.recording:
+            return
+        self._had_speech = True
+        if self._silence_bytes:
+            self._silence_bytes = 0
+            if self._countdown_shown >= 0:
+                self._countdown_shown = -1.0
+                self._emit("resumed")
+
     def feed(self, chunk: bytes) -> bool:
         """Process one audio chunk.
 

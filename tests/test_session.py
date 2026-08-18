@@ -180,6 +180,35 @@ class SessionTest(unittest.TestCase):
         self.assertGreater(len(streamed), len(self.clips[0]))  # the trimmed tail
         self.assertEqual(session.buffered_sec, 0.0)
 
+    # -- speech noticed by the ASR, not the level detector -----------------
+
+    def test_asr_words_count_as_speech_when_levels_never_do(self):
+        """A rumbly room can hold the threshold above real speech; transcribed
+        words must still arm the silence stop and keep the clip usable."""
+        session = self.make()
+        session.on_hotkey()
+        self.feed(session, silence(1.0))     # "speech" the detector can't hear
+        session.notice_speech()              # ...but the ASR transcribed words
+        self.feed(session, silence(3.5))     # user stops talking
+        self.assertIn("countdown", self.kinds())
+        self.assertIn("finished", self.kinds())
+        self.assertEqual(len(self.clips), 1)
+
+    def test_asr_words_cancel_a_running_countdown(self):
+        session = self.make()
+        session.on_hotkey()
+        self.feed(session, tone(1.0) + silence(0.7))
+        self.assertIn("countdown", self.kinds())
+        session.notice_speech()
+        self.assertIn("resumed", self.kinds())
+
+    def test_notice_speech_while_idle_is_a_noop(self):
+        session = self.make()
+        session.notice_speech()
+        self.feed(session, silence(1.0))
+        self.assertFalse(session.recording)
+        self.assertEqual(self.kinds(), [])
+
     # -- adaptive threshold ------------------------------------------------
 
     def test_noise_floor_rises_in_a_loud_room(self):

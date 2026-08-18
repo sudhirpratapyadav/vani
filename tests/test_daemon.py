@@ -128,6 +128,13 @@ class LiveClipTest(unittest.TestCase):
         self.assertIsNone(d._live)
         self.assertFalse(live.finished)
 
+    def test_live_text_marks_the_session_as_having_heard_speech(self):
+        d = self.make()
+        d.session.on_hotkey()
+        self.assertFalse(d.session._had_speech)
+        d.on_live_text("hello there")
+        self.assertTrue(d.session._had_speech)
+
     def test_health_probe_notifies_on_change_only(self):
         d = self.make()
         with mock.patch.object(daemon, "check_health",
