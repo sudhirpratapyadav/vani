@@ -77,6 +77,10 @@ class Session:
         self._buf: list[bytes] = []
         self._buflen = 0
         self._had_speech = False
+        #: Speech the *level detector* heard, as opposed to notice_speech().
+        #: While this is True the levels own the silence clock: they see the
+        #: pause the moment it happens, where the ASR's words lag the voice.
+        self._level_speech = False
         self._silence_bytes = 0
         self._countdown_shown = -1.0
         #: Decaying maximum of recent chunk levels; calibrates the threshold to
@@ -133,6 +137,12 @@ class Session:
         if not self.recording:
             return
         self._had_speech = True
+        if self._level_speech:
+            # The level detector is hearing this speech itself, and it sees
+            # the pause the moment it happens — a delta only proves speech
+            # from a second ago, and resetting the clock on it would delay
+            # every stop by the model's lag.
+            return
         if self._silence_bytes:
             self._silence_bytes = 0
             if self._countdown_shown >= 0:
@@ -162,6 +172,7 @@ class Session:
 
         if level >= self.speech_threshold:
             self._had_speech = True
+            self._level_speech = True
             if self._silence_bytes:
                 self._silence_bytes = 0
                 if self._countdown_shown >= 0:

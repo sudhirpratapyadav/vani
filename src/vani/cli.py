@@ -131,7 +131,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         state.IDLE: "idle",
         state.RECORDING: "recording",
         state.TRANSCRIBING: "transcribing",
-        state.SILENCE: f"sending in {countdown:.1f}s",
+        state.SILENCE: f"typing in {countdown:.1f}s",
     }[current]
     print(f"state:  {label}")
     print(f"daemon: {'running (pid %d)' % pid if pid else 'not running'}")

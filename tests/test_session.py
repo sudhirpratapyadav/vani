@@ -194,10 +194,25 @@ class SessionTest(unittest.TestCase):
         self.assertIn("finished", self.kinds())
         self.assertEqual(len(self.clips), 1)
 
-    def test_asr_words_cancel_a_running_countdown(self):
+    def test_asr_words_cancel_a_countdown_only_on_a_deaf_detector(self):
+        """When the level detector hears the speech itself, it owns the
+        silence clock: the ASR's lagging deltas must not stretch every stop
+        by the model's latency."""
         session = self.make()
         session.on_hotkey()
         self.feed(session, tone(1.0) + silence(0.7))
+        self.assertIn("countdown", self.kinds())
+        session.notice_speech()   # a late delta for the earlier speech
+        self.assertNotIn("resumed", self.kinds())
+        self.feed(session, silence(0.5))
+        self.assertIn("finished", self.kinds())  # countdown ran to the end
+
+    def test_asr_words_do_cancel_the_countdown_when_levels_are_deaf(self):
+        session = self.make()
+        session.on_hotkey()
+        self.feed(session, silence(1.0))
+        session.notice_speech()               # arms had_speech, deaf detector
+        self.feed(session, silence(0.7))      # countdown starts
         self.assertIn("countdown", self.kinds())
         session.notice_speech()
         self.assertIn("resumed", self.kinds())

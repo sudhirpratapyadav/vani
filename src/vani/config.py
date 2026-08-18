@@ -34,7 +34,9 @@ class ServerConfig:
     token_file: str = ""
     #: Model name sent in session.update.
     model: str = "mistralai/Voxtral-Mini-4B-Realtime-2602"
-    #: How long to wait for the final transcript after a recording ends.
+    #: After a recording ends, give up once the server has been silent this
+    #: long. Counted from its last delta, not from the stop — a long
+    #: utterance keeps draining as long as words keep arriving.
     timeout_sec: float = 20.0
     #: Minutes between background connectivity checks (0 disables them).
     health_check_min: float = 5.0

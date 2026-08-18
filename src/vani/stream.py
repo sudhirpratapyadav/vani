@@ -27,6 +27,7 @@ import base64
 import json
 import queue
 import threading
+import time
 from typing import Callable
 
 from .config import Config
@@ -74,6 +75,9 @@ class LiveStream:
         self._open_socket = open_socket
         self._q: "queue.Queue[bytes | None]" = queue.Queue()
         self._done = threading.Event()
+        #: When the server last said anything; finish() waits on activity,
+        #: not a stopwatch, so a long utterance may drain for minutes.
+        self._last_event = time.monotonic()
         self._parts: list[str] = []
         self._text: str | None = None
         self._error: str | None = None
@@ -90,19 +94,29 @@ class LiveStream:
     def finish(self, timeout: float) -> str:
         """Commit the utterance and return the final transcript.
 
-        Raises StreamError if anything went wrong at any point — connecting,
-        sending, or the final transcript not arriving in time.
+        The audio is long since sent; what remains is the model draining its
+        backlog, which for a long utterance takes longer than any fixed wait.
+        So `timeout` bounds server *inactivity*, not the total: as long as
+        deltas keep arriving, finish keeps waiting. And a transcript in hand
+        always beats an error — if the final event never comes, the joined
+        deltas are returned rather than thrown away. StreamError is raised
+        only when there is genuinely no text to type.
         """
         self._q.put(None)
-        if not self._done.wait(timeout):
-            self._fail("no final transcript after %.0fs" % timeout)
+        while not self._done.wait(0.25):
+            if time.monotonic() - self._last_event > timeout:
+                break
         # Let the pump drain before dropping the socket under its sends.
         self._pump.join(timeout=5)
         self._close()
+        text = (self._text if self._text is not None else "".join(self._parts)).strip()
+        if self._done.is_set() and self._error is None:
+            return text  # may be empty: silence is a valid transcript
+        if text:
+            return text  # partial — the final event never arrived
         if self._error is not None:
             raise StreamError(self._error)
-        text = self._text if self._text is not None else "".join(self._parts)
-        return text.strip()
+        raise StreamError("no transcript (%.0fs without server activity)" % timeout)
 
     def abort(self) -> None:
         """The recording was discarded; drop the socket, nobody wants the text."""
@@ -166,6 +180,7 @@ class LiveStream:
         try:
             while not self._done.is_set():
                 msg = json.loads(ws.recv(timeout=60))
+                self._last_event = time.monotonic()
                 kind = msg.get("type")
                 if kind == "transcription.delta":
                     delta = msg.get("delta", "")

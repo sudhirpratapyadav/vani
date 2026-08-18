@@ -76,11 +76,13 @@ class Daemon:
             state.set_status(state.RECORDING)
             self._start_live()
             self.notifier.show(
-                "● Listening — pause %.0fs to send, or press the key"
+                "● Listening — pause %.0fs to finish, or press the key"
                 % self.cfg.recording.silence_sec, 60000, replace=True)
         elif event.kind == "countdown":
             state.set_countdown(event.seconds)
-            self.notifier.show("Sending in %.1fs — %s" % (
+            # "Typing", not "sending": the audio streamed while they spoke,
+            # and this clock only decides when the recording ends.
+            self.notifier.show("Typing in %.1fs — %s" % (
                 event.seconds, _tail(self._live_text) or "speak to continue"),
                 60000, replace=True)
         elif event.kind == "resumed":

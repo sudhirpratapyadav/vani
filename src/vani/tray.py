@@ -30,8 +30,8 @@ ICONS = {
 }
 LABELS = {
     state.IDLE: "Idle — press the key or say the wake word",
-    state.RECORDING: "● Recording... (pause to send)",
-    state.SILENCE: "Sending soon — speak to continue",
+    state.RECORDING: "● Recording... (pause to finish)",
+    state.SILENCE: "Typing soon — speak to continue",
     state.TRANSCRIBING: "Transcribing...",
 }
 MAX_ITEM_CHARS = 60

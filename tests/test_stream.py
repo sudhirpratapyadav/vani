@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import queue
+import time
 import unittest
 
 from vani.config import Config
@@ -95,11 +96,42 @@ class LiveStreamTest(unittest.TestCase):
         with self.assertRaisesRegex(StreamError, "connection refused"):
             stream.finish(timeout=5)
 
-    def test_no_final_transcript_times_out(self):
+    def test_no_transcript_at_all_times_out(self):
         stream, ws = make_stream([])  # the server never answers
         stream.start()
-        with self.assertRaisesRegex(StreamError, "no final transcript"):
+        with self.assertRaisesRegex(StreamError, "no transcript"):
             stream.finish(timeout=0.2)
+
+    def test_deltas_without_a_final_event_are_kept_not_discarded(self):
+        """A long utterance can outlive any fixed wait; the words already in
+        hand must be typed, not traded for an error notification."""
+        stream, ws = make_stream([
+            {"type": "transcription.delta", "delta": "nearly "},
+            {"type": "transcription.delta", "delta": "everything"},
+            # ...and transcription.done never arrives
+        ])
+        stream.start()
+        self.assertEqual(stream.finish(timeout=0.5), "nearly everything")
+
+    def test_server_activity_extends_the_wait(self):
+        """The timeout bounds inactivity: a server still producing deltas is
+        allowed to take longer in total than the timeout itself."""
+        import threading
+
+        stream, ws = make_stream([])
+        stream.start()
+
+        def drip() -> None:
+            for i in range(4):
+                time.sleep(0.3)   # each gap under the 0.5s timeout...
+                ws._events.put({"type": "transcription.delta", "delta": str(i)})
+            time.sleep(0.3)
+            ws._events.put({"type": "transcription.done", "text": "0123 done"})
+
+        threading.Thread(target=drip, daemon=True).start()
+        started = time.time()
+        self.assertEqual(stream.finish(timeout=0.5), "0123 done")
+        self.assertGreater(time.time() - started, 1.0)  # ...totalling more
 
     def test_abort_closes_the_socket_and_poisons_finish(self):
         stream, ws = make_stream([])

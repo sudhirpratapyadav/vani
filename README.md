@@ -160,7 +160,7 @@ show` prints the effective values with the token masked.
 | `server.url` | `wss://ai-stream.lsquarelabs.com/v1/realtime` | realtime ASR WebSocket |
 | `server.token` | — | optional Bearer token; or `server.token_file`, or `$VANI_TOKEN` |
 | `server.model` | `mistralai/Voxtral-Mini-4B-Realtime-2602` | model named in `session.update` |
-| `server.timeout_sec` | `20` | wait for the final transcript after a recording ends |
+| `server.timeout_sec` | `20` | give up when the server goes quiet this long after a recording ends (activity resets it) |
 | `server.health_check_min` | `5` | minutes between connectivity checks (0 = off) |
 | `wake.enabled` | `true` | set false for hotkey-only (no vosk needed) |
 | `wake.phrases` | `["hey claude", "hi claude"]` | words must exist in the Vosk vocabulary |
