@@ -63,6 +63,11 @@ def status_file() -> Path:
     return runtime_dir() / "status"
 
 
+def server_file() -> Path:
+    """Last known server connectivity, written by the daemon's health monitor."""
+    return runtime_dir() / "server"
+
+
 def daemon_pidfile() -> Path:
     return runtime_dir() / "daemon.pid"
 

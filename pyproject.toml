@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vani"
-version = "1.0.0"
+version = "2.0.0"
 description = "Voice dictation for the Linux desktop — speak, and the text is typed"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -17,9 +17,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
-# The core client deliberately has no Python dependencies: recording is an
-# arecord pipe, HTTP is urllib, TOML falls back to a bundled reader on 3.10.
-dependencies = []
+# Transcription rides the realtime WebSocket, so websockets is a hard
+# dependency; everything else stays out of pip on purpose (recording is an
+# arecord pipe, HTTP is urllib, TOML falls back to a bundled reader on 3.10).
+dependencies = ["websockets>=12"]
 
 [project.optional-dependencies]
 # Wake-word spotting. Without it, vani is hotkey-driven only.

@@ -19,18 +19,25 @@ class ConfigError(Exception):
     """The configuration is missing, unparseable, or invalid."""
 
 
+#: The batch API this app used before v2; recognised only to migrate old configs.
+LEGACY_BATCH_URL = "https://ai.lsquarelabs.com"
+
+
 @dataclass
 class ServerConfig:
-    #: Base URL of the transcription API.
-    url: str = "https://ai.lsquarelabs.com"
-    #: Bearer token. Prefer `token_file` or the VANI_TOKEN env var on shared machines.
+    #: Realtime ASR WebSocket endpoint (OpenAI-realtime shaped).
+    url: str = "wss://ai-stream.lsquarelabs.com/v1/realtime"
+    #: Optional bearer token, sent as an Authorization header when set.
+    #: Prefer `token_file` or the VANI_TOKEN env var on shared machines.
     token: str = ""
     #: Optional path to a file holding the token (first line).
     token_file: str = ""
-    #: Endpoint appended to `url` for raw-WAV transcription.
-    endpoint: str = "/transcribe"
-    #: How long to wait for a transcription, in seconds.
-    timeout_sec: float = 120.0
+    #: Model name sent in session.update.
+    model: str = "mistralai/Voxtral-Mini-4B-Realtime-2602"
+    #: How long to wait for the final transcript after a recording ends.
+    timeout_sec: float = 20.0
+    #: Minutes between background connectivity checks (0 disables them).
+    health_check_min: float = 5.0
 
 
 @dataclass
@@ -62,8 +69,6 @@ class RecordingConfig:
     #: Absolute level speech must clear in a silent room. Lower it for a quiet
     #: microphone; vani also scales it down automatically (see session.py).
     min_speech_level: float = 350.0
-    #: Amplify quiet input before sending (helps Bluetooth headsets in HFP mode).
-    auto_gain: bool = True
 
 
 @dataclass
@@ -104,12 +109,11 @@ class Config:
     # -- derived values ----------------------------------------------------
 
     @property
-    def transcribe_url(self) -> str:
-        return self.server.url.rstrip("/") + "/" + self.server.endpoint.lstrip("/")
-
-    @property
     def health_url(self) -> str:
-        return self.server.url.rstrip("/") + "/healthz"
+        """The realtime host's plain-HTTP health endpoint (vLLM's GET /health)."""
+        scheme, _, rest = self.server.url.partition("://")
+        host = rest.split("/", 1)[0]
+        return ("https" if scheme == "wss" else "http") + f"://{host}/health"
 
     @property
     def model_path(self) -> Path:
@@ -130,15 +134,6 @@ class Config:
                 raise ConfigError(f"cannot read token_file {path}: {exc}") from None
         return self.server.token.strip()
 
-    def require_token(self) -> str:
-        token = self.resolved_token()
-        if not token:
-            raise ConfigError(
-                "no API token — set server.token in "
-                f"{paths.config_file()}, point server.token_file at a file, "
-                "or export VANI_TOKEN"
-            )
-        return token
 
 
 # --------------------------------------------------------------------------
@@ -162,6 +157,7 @@ def load(path: Path | None = None, *, required: bool = True) -> Config:
         raise ConfigError(f"cannot read {path}: {exc}") from None
 
     cfg = Config(source=str(path))
+    _migrate_legacy(data)
     for section_name in ("server", "wake", "recording", "hotkey", "output"):
         section = data.pop(section_name, {})
         if not isinstance(section, dict):
@@ -171,6 +167,39 @@ def load(path: Path | None = None, *, required: bool = True) -> Config:
         raise ConfigError(f"{path}: unknown section(s): {', '.join(sorted(data))}")
     _validate(cfg)
     return _apply_env(cfg)
+
+
+def _migrate_legacy(data: dict) -> None:
+    """Absorb a config written for the batch-era app without erroring.
+
+    The keys that changed meaning are mapped, not rejected: an app update must
+    not strand the user at "unknown key" over settings an older vani wrote
+    itself. The token is the one thing worth carrying over verbatim.
+    """
+    recording = data.get("recording")
+    if isinstance(recording, dict):
+        # Post-hoc gain made sense for a batch upload; a live stream sends the
+        # audio as captured, so the knob no longer exists.
+        recording.pop("auto_gain", None)
+    server = data.get("server")
+    if isinstance(server, dict):
+        server.pop("endpoint", None)  # batch-only concept
+        url = server.get("url", "")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            # The old batch base URL cannot stream; point it at the default
+            # realtime endpoint rather than failing on scheme validation.
+            server.pop("url")
+        if isinstance(server.get("timeout_sec"), (int, float)) \
+                and server["timeout_sec"] > 60:
+            server.pop("timeout_sec")  # batch-scale value; use the streaming default
+    stream = data.pop("stream", None)
+    if isinstance(stream, dict):  # a short-lived interim section; fold it in
+        if not isinstance(server, dict):
+            server = data["server"] = {}
+        for old, new in (("url", "url"), ("model", "model"),
+                         ("done_timeout_sec", "timeout_sec")):
+            if old in stream:
+                server.setdefault(new, stream[old])
 
 
 def _fill(obj: Any, values: dict[str, Any], section: str, path: Path) -> None:
@@ -231,8 +260,12 @@ def _validate(cfg: Config) -> None:
         )
     if cfg.wake.enabled and not [p for p in cfg.wake.phrases if p.strip()]:
         raise ConfigError("wake.enabled is true but wake.phrases is empty")
-    if not cfg.server.url.startswith(("http://", "https://")):
-        raise ConfigError("server.url must start with http:// or https://")
+    if not cfg.server.url.startswith(("ws://", "wss://")):
+        raise ConfigError("server.url must start with ws:// or wss://")
+    if cfg.server.timeout_sec <= 0:
+        raise ConfigError("server.timeout_sec must be positive")
+    if cfg.server.health_check_min < 0:
+        raise ConfigError("server.health_check_min must not be negative")
 
 
 def _apply_env(cfg: Config) -> Config:
@@ -249,13 +282,13 @@ def _apply_env(cfg: Config) -> Config:
 
 TEMPLATE = """\
 # vani configuration — see `vani config show` for the effective values.
-# This file holds an API token; keep it mode 600.
+# This file may hold an API token; keep it mode 600.
 
 [server]
 url = "{url}"
 token = "{token}"
 # token_file = "~/.config/vani/token"   # alternative to the line above
-timeout_sec = {timeout_sec}
+timeout_sec = {timeout_sec}     # wait for the final transcript after a recording
 
 [wake]
 enabled = {wake_enabled}
@@ -266,7 +299,6 @@ phrases = [{phrases}]
 silence_sec = {silence_sec}        # silence that ends a recording
 silence_warn_sec = {warn_sec}   # silence before the countdown appears
 max_sec = {max_sec}          # hard limit on one recording
-auto_gain = {auto_gain}
 
 [hotkey]
 enabled = {hotkey_enabled}
@@ -297,7 +329,6 @@ def render(cfg: Config) -> str:
         silence_sec=_num(cfg.recording.silence_sec),
         warn_sec=_num(cfg.recording.silence_warn_sec),
         max_sec=_num(cfg.recording.max_sec),
-        auto_gain=_bool(cfg.recording.auto_gain),
         hotkey_enabled=_bool(cfg.hotkey.enabled),
         keycode=cfg.hotkey.keycode,
         typer=cfg.output.typer,
@@ -379,8 +410,8 @@ def from_legacy(path: Path | None = None) -> Config | None:
             values[m.group(1)] = m.group(2)
 
     cfg = Config(source=f"imported from {path}")
-    if "DICTATE_URL" in values:
-        cfg.server.url = values["DICTATE_URL"]
+    # DICTATE_URL is deliberately not imported: it named the old batch API,
+    # which nothing in this app can talk to any more.
     if "DICTATE_TOKEN" in values:
         cfg.server.token = values["DICTATE_TOKEN"]
     if values.get("DICTATE_WAKE"):

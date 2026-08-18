@@ -11,15 +11,17 @@ a recording has actually started.
 ```
 $ vani doctor
   ✓ config          ~/.config/vani/config.toml
-  ✓ api token
+  ✓ server url      wss://ai-stream.lsquarelabs.com/v1/realtime
   ✓ arecord         /usr/bin/arecord
   ✓ typing backend  xdotool
   ✓ wake model      ~/.local/share/vani/vosk-model-small-en-us-0.15
+  ✓ websockets
   ✓ daemon          running (pid 40122)
-  ✓ server          https://ai.lsquarelabs.com {'ready': True}
+  ✓ start on login  enabled
+  ✓ server          wss://ai-stream.lsquarelabs.com/v1/realtime
 ```
 
-## Install
+## Install / uninstall
 
 ```sh
 git clone https://github.com/sudhirpratapyadav/vani.git && cd vani
@@ -28,13 +30,13 @@ git clone https://github.com/sudhirpratapyadav/vani.git && cd vani
 
 That installs the package into `~/.local/bin`, writes a config (importing the
 old `~/.config/dictate/config` if it's still there), downloads the 40 MB
-wake-word model, and enables the systemd user service. Then put your API token
-in `~/.config/vani/config.toml` and restart:
+wake-word model, and enables the systemd user services — the daemon and the
+tray start now and on every login. `vani doctor` at the end confirms the
+server is reachable.
 
-```sh
-systemctl --user restart vani-daemon
-vani doctor
-```
+To remove vani, `./uninstall.sh` stops and disables the services, removes the
+units, and uninstalls the package; add `--purge` to also delete the config,
+history, and wake-word model.
 
 Manually, if you'd rather not run the script:
 
@@ -44,12 +46,13 @@ pipx install .          # or: python3 -m pip install --user .
 pip install --user vosk # optional: wake words
 vani config init && vani model download
 cp systemd/*.service ~/.config/systemd/user/
-systemctl --user enable --now vani-daemon.service
+systemctl --user enable --now vani-daemon.service vani-tray.service
 ```
 
-Requirements: Linux, Python 3.9+, X11 (see [Wayland](#wayland) below). The core
-client has no Python dependencies — recording is an `arecord` pipe, HTTP is
-`urllib`. `vosk` is optional and only powers the wake word.
+Requirements: Linux, Python 3.9+, X11 (see [Wayland](#wayland) below). The only
+Python dependency is `websockets` (the transcription transport) — recording is
+an `arecord` pipe, health checks are `urllib`. `vosk` is optional and only
+powers the wake word.
 
 ## Using it
 
@@ -65,14 +68,25 @@ three seconds and the clip is sent.
 While it counts down, speaking again cancels the send and recording continues.
 Pressing the key during a recording sends it immediately.
 
+While you speak, the audio streams to the realtime endpoint and the text
+appears live in the notification, a word or two behind your voice. Nothing is
+typed until the recording ends — then the final transcript goes into the
+focused field in one piece, so there is never anything to un-type.
+
+The daemon checks the server's health at startup and every few minutes, and
+tells you — once, not per recording — when it becomes unreachable and when it
+is back. The tray shows the current verdict; so does `vani status`.
+
 ### Commands
 
 | Command | What it does |
 |---|---|
 | `vani start` | run the daemon in the foreground (systemd normally does this) |
 | `vani toggle` | start/stop a recording — the daemon's if it's running, else standalone |
-| `vani tray` | tray indicator: state icon, last 5 transcripts, click to copy |
-| `vani status` | what the daemon is doing right now |
+| `vani tray` | tray indicator: state, server health, transcripts, settings |
+| `vani status` | daemon state, server connectivity, last transcript |
+| `vani service status\|start\|stop\|restart\|enable\|disable` | manage the background services |
+| `vani quit` | stop vani completely — daemon and tray |
 | `vani history [-n 20]` | past transcripts |
 | `vani doctor` | check every dependency, the config, and the server |
 | `vani config init\|show\|edit\|path` | manage the config file |
@@ -93,11 +107,16 @@ mic ──> arecord ──> vani daemon
                       │   threshold; countdown shows after 1 s; speaking again
                       │   cancels it; the key sends immediately
                       │
-                      └── POST WAV ──> https://ai.lsquarelabs.com/transcribe
-                                           │  (Bearer token)
-                            text  <────────┘
+                      ├── while recording, every chunk streams over a WebSocket
+                      │   to wss://ai-stream.lsquarelabs.com/v1/realtime and the
+                      │   deltas show live in the notification
+                      │
+                      └── on stop: commit the stream, take the final text
                             └─ xdotool types it into the focused field
                                and appends to ~/.cache/vani/history.log
+
+          every 5 min ── GET https://ai-stream…/health ──> one banner when the
+                         server goes away, one when it is back
 ```
 
 Design notes worth knowing before changing things:
@@ -117,40 +136,47 @@ Design notes worth knowing before changing things:
   reliable. The daemon sweeps orphaned `xinput` watchers at startup, because a
   stale one holds the XI2 selection and the next one gets `BadAccess`.
 - **The microphone is reopened after every send.** Otherwise the pipe replays
-  whatever accumulated during the HTTP round-trip into the next recording.
-- **Quiet audio is amplified before sending.** Bluetooth headsets in HFP mode
-  record narrowband and very quietly, and the model transcribes that as empty.
+  whatever accumulated during the transcription round-trip into the next
+  recording.
+- **There is no batch fallback.** The stream is the only transcription path;
+  when it fails the recording is reported as failed and the health monitor
+  answers "is the server down?". One path means one thing to debug.
 - **`vani toggle` signals the running daemon** (SIGUSR1) rather than opening a
   second recorder, so one process owns the microphone.
 
 Layout: `session.py` is the state machine and knows nothing about microphones,
-HTTP, or the desktop — that's what makes it testable offline. `daemon.py` wires
-it to `audio.py`, `wake.py`, `hotkey.py`, `client.py`, and `output.py`.
+sockets, or the desktop — that's what makes it testable offline. `daemon.py`
+wires it to `audio.py`, `wake.py`, `hotkey.py`, `stream.py` (the transcription
+socket), `client.py` (health), `service.py` (systemd), and `output.py`.
 
 ## Configuration
 
-`~/.config/vani/config.toml` (mode 600 — it holds the token). `vani config show`
-prints the effective values with the token masked.
+`~/.config/vani/config.toml` (mode 600 — it may hold a token). `vani config
+show` prints the effective values with the token masked.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `server.url` | `https://ai.lsquarelabs.com` | transcription API base URL |
-| `server.token` | — | Bearer token; or `server.token_file`, or `$VANI_TOKEN` |
-| `server.timeout_sec` | `120` | how long to wait for a transcript |
+| `server.url` | `wss://ai-stream.lsquarelabs.com/v1/realtime` | realtime ASR WebSocket |
+| `server.token` | — | optional Bearer token; or `server.token_file`, or `$VANI_TOKEN` |
+| `server.model` | `mistralai/Voxtral-Mini-4B-Realtime-2602` | model named in `session.update` |
+| `server.timeout_sec` | `20` | wait for the final transcript after a recording ends |
+| `server.health_check_min` | `5` | minutes between connectivity checks (0 = off) |
 | `wake.enabled` | `true` | set false for hotkey-only (no vosk needed) |
 | `wake.phrases` | `["hey claude", "hi claude"]` | words must exist in the Vosk vocabulary |
 | `wake.model_dir` | `~/.local/share/vani/vosk-model-small-en-us-0.15` | model location |
 | `recording.silence_sec` | `3` | silence that ends a recording |
 | `recording.silence_warn_sec` | `1` | silence before the countdown appears |
 | `recording.max_sec` | `120` | hard limit on one recording |
-| `recording.auto_gain` | `true` | amplify quiet input before sending |
 | `recording.speech_factor` | `3.5` | how far above the noise floor counts as speech |
 | `recording.min_speech_level` | `350` | absolute bar for speech; lower for a quiet mic |
 | `hotkey.enabled` / `.keycode` | `true` / `171` | the watched key |
 | `output.typer` | `auto` | `xdotool`, `ydotool`, `clipboard`, `stdout` |
 | `output.notify` / `.history` | `true` | desktop notifications / transcript log |
 
-Unknown or mistyped keys are rejected at startup rather than silently ignored.
+Unknown or mistyped keys are rejected at startup rather than silently ignored —
+except the keys the batch-era app wrote itself (`server.endpoint`,
+`recording.auto_gain`, an `https://` server URL), which are migrated in place
+so an upgrade never strands the config.
 
 Find your key's keycode with:
 
@@ -164,18 +190,24 @@ xinput test-xi2 --root | grep -A2 RawKeyPress
 ~/.config/vani/config.toml     configuration (600)
 ~/.local/share/vani/           wake-word model
 ~/.cache/vani/history.log      transcripts
-~/.cache/vani/last.wav         last clip sent, for debugging
-$XDG_RUNTIME_DIR/vani/         status file and pidfiles
+~/.cache/vani/last.wav         last clip recorded, for debugging
+$XDG_RUNTIME_DIR/vani/         status, server verdict, pidfiles (volatile)
 ```
+
+`./uninstall.sh --purge` removes all of it.
 
 ## Troubleshooting
 
 Start with `vani doctor` — most failures here are environmental and it names
 them directly. Then:
 
-- **"(no speech detected)"** — listen to `~/.cache/vani/last.wav`: it is exactly
-  what was sent. A wired or built-in mic (Settings → Sound → Input) beats a
-  Bluetooth headset for ASR by a wide margin.
+- **"✗ Transcription failed" / server DOWN in the tray** — the server or the
+  path to it is gone; `vani doctor` names which. The daemon re-checks every
+  few minutes and posts a banner when it is back. See
+  [Server side](#server-side) for bringing the GPU end up.
+- **"(no speech detected)"** — listen to `~/.cache/vani/last.wav`: it is the
+  same audio the server heard. A wired or built-in mic (Settings → Sound →
+  Input) beats a Bluetooth headset for ASR by a wide margin.
 - **The media key stopped working**, `BadAccess` in the log — an orphaned
   watcher: `pkill -f "xinput test-xi2"`, then restart the daemon.
 - **Nothing gets typed** — check `vani doctor`'s typing-backend line. On X11
@@ -256,25 +288,44 @@ should print `started (wake word)`, a countdown, and `finished (3s silence)`.
 
 ## Server side
 
-The GPU server is `~/sudhir/voice_api/voxtral_api.py`, run on dgx2 inside a
-Slurm GPU-holder job:
+The GPU server is vLLM serving Voxtral-Mini-Realtime, run inside a Slurm
+GPU-holder job on the ihub cluster (dgx1/dgx2). Always launch it through the
+wrapper — never `vllm serve` bare:
 
 ```sh
-cd ~/sudhir/voice_api && bash ~/use_instructions/run_in_holder.sh <HOLDER_JOBID> 0 \
-    ~/sudhir/voice_api/voxtral_api.log \
-    env LD_LIBRARY_PATH=/ihub/apps/python/3.10/lib .venv/bin/python voxtral_api.py --port 8000
+bash ~/use_instructions/run_in_holder.sh <HOLDER_JOBID> <GPU> \
+    ~/sudhir/voice_api/vllm_realtime.log \
+    bash ~/sudhir/voice_api/run_vllm_realtime.sh
 ```
 
-`LD_LIBRARY_PATH` is required — the venv python can't find libpython3.10 without it.
+The wrapper holds the launch incantation (`cuda-compat` first on
+`LD_LIBRARY_PATH`, `HF_HOME`) plus two memory guardrails that exist because
+vLLM/torch workers have repeatedly taken the whole node down by transiently
+allocating ~2 TB of RAM (dmesg shows global OOMs with that signature in
+Oct 2025, Jan 2026, Feb 2026, Aug 2026 — Slurm here puts no memory cgroup
+around steps, so nothing else stops it):
 
-Internet path: `dgx2:8000` → `ssh_bridge.sh` reverse-forward (login node) → VPS
-`untu_vps` → cloudflared named tunnel `voice-api` → `ai.lsquarelabs.com`.
+- `ulimit -v` caps the address space at 200 GiB — ~20× the ~9 GiB this server
+  actually uses. A runaway allocation now dies inside vLLM (and the desktop
+  app reports "transcription failed / server down") instead of OOM-killing
+  the node for everyone.
+- `oom_score_adj = 1000` volunteers the server to the OOM killer first if the
+  node runs out of memory for any other reason.
+
+Two build traps, each worth an afternoon: `cuda-compat` must be first on
+`LD_LIBRARY_PATH` (the node driver reports CUDA 12040, which torch rejects),
+and the three flashinfer packages must all be 0.6.13, installed with
+`--no-deps` so pip cannot swap torch out from under the cu13 build.
+
+Internet path: `dgx?:8001` → `ssh_bridge.sh` reverse-forward (login node) →
+VPS `untu_vps` → cloudflared named tunnel → `ai-stream.lsquarelabs.com`.
 cloudflared cannot run on the cluster itself (edge port 7844 is blocked).
+**If the holder moves to a different node, update the node name in
+`ssh_bridge.sh` and restart it** — a 502 from the tunnel with vLLM running
+usually means the bridge still points at the old node.
 
-Endpoints: `GET /healthz` (no auth), `POST /transcribe` (raw WAV), and
-`POST /v1/audio/transcriptions` (OpenAI-style multipart). The last two need
-`Authorization: Bearer <token>`; the token lives at
-`~/sudhir/voice_api/api_token.txt`.
+Endpoints: `GET /health` (vLLM's own, no auth — what the app's health monitor
+polls) and the OpenAI-realtime WebSocket at `/v1/realtime`.
 
 ## License
 

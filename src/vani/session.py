@@ -50,11 +50,15 @@ class Session:
         spotter,
         on_clip: Callable[[bytes], None],
         on_event: Callable[[Event], None] = lambda e: None,
+        on_chunk: Callable[[bytes], None] = lambda c: None,
     ):
         self.cfg = cfg
         self.spotter = spotter
         self.on_clip = on_clip
         self.on_event = on_event
+        #: Called with every chunk that enters the buffer, in order, so a live
+        #: consumer sees exactly the audio the finished clip will contain.
+        self.on_chunk = on_chunk
 
         rec = cfg.recording
         self.rate = rec.sample_rate
@@ -128,6 +132,7 @@ class Session:
 
         self._buf.append(chunk)
         self._buflen += len(chunk)
+        self.on_chunk(chunk)
         # Updated before the comparison so the first loud chunk raises the bar
         # for the quiet ones that follow it, not the other way round.
         self.speech_peak = max(level, self.speech_peak * SPEECH_PEAK_DECAY)

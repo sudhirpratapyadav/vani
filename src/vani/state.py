@@ -47,6 +47,30 @@ def read_status() -> tuple[str, float]:
     return raw if raw in (IDLE, RECORDING, TRANSCRIBING) else IDLE, 0.0
 
 
+def set_server(ok: bool, detail: str = "") -> None:
+    """Record the last health-check verdict for the tray and `vani status`."""
+    path = paths.server_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(("ok" if ok else "down") + ("\t" + detail if detail else ""))
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def read_server() -> "tuple[bool | None, str]":
+    """(ok, detail); ok is None when no health check has run yet."""
+    try:
+        raw = paths.server_file().read_text().strip()
+    except OSError:
+        return None, ""
+    verdict, _, detail = raw.partition("\t")
+    if verdict not in ("ok", "down"):
+        return None, ""
+    return verdict == "ok", detail
+
+
 def append_history(text: str) -> None:
     path = paths.history_file()
     try:

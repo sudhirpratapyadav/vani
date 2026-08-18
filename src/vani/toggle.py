@@ -15,10 +15,10 @@ import subprocess
 import time
 
 from . import audio, daemon, paths, state
-from .client import Client, TranscribeError
-from .config import Config, ConfigError
+from .config import Config
 from .notify import Notifier
 from .output import Typist
+from .stream import LiveStream, StreamError
 
 
 def toggle(cfg: Config) -> int:
@@ -87,17 +87,22 @@ def _stop_and_send(cfg: Config) -> int:
         notifier.show("(nothing captured, cancelled)", 2500, replace=True)
         return 0
 
-    if cfg.recording.auto_gain:
-        pcm, _ = audio.auto_gain(pcm)
-    wav = audio.to_wav(pcm, cfg.recording.sample_rate)
     if cfg.output.save_last_wav:
-        state.save_last_wav(wav)
+        state.save_last_wav(audio.to_wav(pcm, cfg.recording.sample_rate))
 
+    # The same socket the daemon streams over, fed after the fact: the clip is
+    # already complete here, so the deltas are not shown, only the final text.
+    stream = LiveStream(cfg)
+    stream.start()
+    chunk_bytes = int(0.2 * cfg.recording.sample_rate * audio.SAMPLE_WIDTH)
+    for i in range(0, len(pcm), chunk_bytes):
+        stream.send(pcm[i:i + chunk_bytes])
     try:
-        text = Client(cfg).transcribe(wav)
-    except (TranscribeError, ConfigError) as exc:
+        text = stream.finish(cfg.server.timeout_sec
+                             + audio.duration(pcm, cfg.recording.sample_rate))
+    except StreamError as exc:
         state.set_status(state.IDLE)
-        notifier.show(f"Failed: {exc}", 6000, replace=True)
+        notifier.show(f"✗ Transcription failed: {exc}", 8000, replace=True)
         return 1
 
     if not text:

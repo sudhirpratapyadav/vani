@@ -41,6 +41,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="show what the daemon is doing right now")
     p.set_defaults(func=cmd_status)
 
+    p = sub.add_parser("service", help="manage the background services")
+    p.add_argument("action",
+                   choices=("status", "start", "stop", "restart",
+                            "enable", "disable"),
+                   help="enable/disable also control starting at login")
+    p.set_defaults(func=cmd_service)
+
+    p = sub.add_parser("quit", help="stop vani completely (daemon and tray)")
+    p.set_defaults(func=cmd_quit)
+
     p = sub.add_parser("history", help="print past transcripts")
     p.add_argument("-n", "--lines", type=int, default=20,
                    help="how many to show (default 20, 0 for all)")
@@ -117,10 +127,46 @@ def cmd_status(args: argparse.Namespace) -> int:
     }[current]
     print(f"state:  {label}")
     print(f"daemon: {'running (pid %d)' % pid if pid else 'not running'}")
+    ok, detail = state.read_server()
+    if ok is None:
+        print("server: unknown (no health check has run)")
+    else:
+        print(f"server: {'online' if ok else 'DOWN'}"
+              + (f" — {detail}" if detail else ""))
     entries = state.read_history(1)
     if entries:
         stamp, text = entries[0]
         print(f"last:   {text[:80]}" + (f"  ({stamp})" if stamp else ""))
+    return 0
+
+
+def cmd_service(args: argparse.Namespace) -> int:
+    from . import service
+
+    if args.action == "status":
+        for unit in service.UNITS:
+            active, enabled = service.unit_state(unit)
+            print(f"{unit:24} {active:10} start on login: {enabled}")
+        return 0
+    if args.action in ("enable", "disable"):
+        ok, out = service.set_start_on_login(args.action == "enable")
+        print(f"start on login: {'enabled' if args.action == 'enable' else 'disabled'}"
+              if ok else f"error: {out or 'systemctl failed'}")
+        return 0 if ok else 1
+    ok, out = service.control(args.action)
+    if not ok:
+        print(f"error: {out or 'systemctl failed'}", file=sys.stderr)
+        return 1
+    past = {"start": "started", "stop": "stopped", "restart": "restarted"}
+    print(f"{past[args.action]}: {', '.join(service.UNITS)}")
+    return 0
+
+
+def cmd_quit(args: argparse.Namespace) -> int:
+    from . import service
+
+    for line in service.quit_all():
+        print(line)
     return 0
 
 
@@ -178,9 +224,7 @@ def _config_init(path: Path, force: bool) -> int:
     if imported:
         print(f"imported settings from {paths.legacy_config_file()}")
     print(f"wrote {path}")
-    if not cfg.server.token:
-        print("\nNext: put your API token in that file (server.token), then run "
-              "`vani doctor`.")
+    print("\nNext: run `vani doctor` to check the setup, including the server.")
     return 0
 
 
@@ -198,9 +242,9 @@ def cmd_model(args: argparse.Namespace) -> int:
 
 def cmd_say(args: argparse.Namespace) -> int:
     from . import audio
-    from .client import Client, TranscribeError
     from .notify import NullNotifier
     from .output import Typist
+    from .stream import LiveStream, StreamError
 
     cfg = _load(args)
     try:
@@ -208,11 +252,16 @@ def cmd_say(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    if cfg.recording.auto_gain:
-        pcm, _ = audio.auto_gain(pcm)
+    stream = LiveStream(cfg)
+    stream.start()
+    chunk_bytes = int(0.2 * cfg.recording.sample_rate * audio.SAMPLE_WIDTH)
+    for i in range(0, len(pcm), chunk_bytes):
+        stream.send(pcm[i:i + chunk_bytes])
     try:
-        text = Client(cfg).transcribe(audio.to_wav(pcm, cfg.recording.sample_rate))
-    except (TranscribeError, ConfigError) as exc:
+        # The model may still be behind the audio; allow for the clip length.
+        text = stream.finish(cfg.server.timeout_sec
+                             + audio.duration(pcm, cfg.recording.sample_rate))
+    except StreamError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if not text:

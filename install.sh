@@ -61,6 +61,8 @@ elif python3 -m venv "${BUILD_DIR:=$(mktemp -d)}/venv" 2>/dev/null; then
     "$BUILD_DIR/venv/bin/pip" -q install --upgrade pip setuptools wheel
     "$BUILD_DIR/venv/bin/pip" -q wheel --no-deps -w "$BUILD_DIR/dist" .
     python3 -m pip install --user --force-reinstall --no-deps "$BUILD_DIR"/dist/vani-*.whl
+    # --no-deps skipped the one hard dependency; install it explicitly.
+    python3 -m pip install --user 'websockets>=12'
 else
     warn "python3-venv is missing — falling back to a direct pip install"
     warn "if that yields 'UNKNOWN-0.0.0': sudo apt install python3-venv, then rerun"
@@ -122,12 +124,12 @@ vani doctor || true
 
 cat <<'EOF'
 
-Next steps
-  1. Put your API token in ~/.config/vani/config.toml (server.token).
-  2. Restart the daemon:  systemctl --user restart vani-daemon
-  3. Say the wake word, or press the media key, and start talking.
+vani is installed. Say the wake word ("hey claude"), or press the media key,
+and start talking — the text appears live and is typed when you pause.
 
-  vani status    what the daemon is doing
-  vani doctor    diagnose problems
-  vani history   past transcripts
+  vani status     what the daemon is doing, and server connectivity
+  vani doctor     diagnose problems
+  vani service    start/stop/restart, or enable/disable start on login
+  vani quit       stop everything (also in the tray menu)
+  ./uninstall.sh  remove vani (--purge also deletes config and history)
 EOF

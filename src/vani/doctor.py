@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from dataclasses import dataclass
 
 from . import paths
-from .client import Client, TranscribeError
+from .client import ServerError, check_health
 from .config import Config, ConfigError
 from .config import load as load_config
 from .output import detect_typer, session_type
@@ -40,6 +39,7 @@ def run(check_server: bool = True) -> int:
     checks += _binary_checks()
     checks += _session_checks(cfg)
     checks += _wake_checks(cfg)
+    checks += _stream_checks(cfg)
     checks += _service_checks()
     if check_server and cfg is not None:
         checks.append(_server_check(cfg))
@@ -76,8 +76,8 @@ def _config_checks() -> list[Check]:
         return checks + [Check("config contents", FAIL, str(exc))]
 
     try:
-        cfg.require_token()  # raises when there is none; never returns empty
-        checks.append(Check("api token", OK))
+        token = cfg.resolved_token()
+        checks.append(Check("api token", OK, "" if token else "not set (optional)"))
     except ConfigError as exc:
         checks.append(Check("api token", FAIL, str(exc)))
     checks.append(Check("server url", OK, cfg.server.url))
@@ -135,37 +135,41 @@ def _wake_checks(cfg: Config | None) -> list[Check]:
     return checks
 
 
+def _stream_checks(cfg: Config | None) -> list[Check]:
+    try:
+        import websockets  # noqa: F401
+    except ModuleNotFoundError:
+        return [Check("websockets", FAIL,
+                      "not installed and there is no other transcription path — "
+                      "`pip install --user 'websockets>=12'`")]
+    return [Check("websockets", OK)]
+
+
 def _service_checks() -> list[Check]:
-    from . import daemon
+    from . import daemon, service
 
     pid = daemon.is_running()
     checks = [Check("daemon", OK if pid else WARN,
-                    f"running (pid {pid})" if pid else "not running — `vani start`")]
+                    f"running (pid {pid})" if pid else "not running — `vani service start`")]
     if shutil.which("systemctl"):
-        try:
-            out = subprocess.run(
-                ["systemctl", "--user", "is-enabled", "vani-daemon.service"],
-                capture_output=True, text=True, timeout=5).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            out = ""
-        if out == "enabled":
-            checks.append(Check("autostart", OK, "vani-daemon.service enabled"))
+        if not service.units_installed():
+            checks.append(Check("services", WARN,
+                                "units not installed — rerun ./install.sh"))
         else:
-            checks.append(Check("autostart", WARN,
-                                "not enabled — `systemctl --user enable --now "
-                                "vani-daemon.service`"))
+            active, enabled = service.unit_state(service.DAEMON_UNIT)
+            checks.append(Check(
+                "start on login", OK if enabled == "enabled" else WARN,
+                enabled if enabled == "enabled"
+                else "disabled — `vani service enable`"))
     return checks
 
 
 def _server_check(cfg: Config) -> Check:
     try:
-        payload = Client(cfg).health()
-    except TranscribeError as exc:
+        check_health(cfg)
+    except ServerError as exc:
         return Check("server", FAIL, f"{cfg.health_url}: {exc}")
-    ready = payload.get("ready")
-    if ready is False:
-        return Check("server", FAIL, f"reachable but not ready: {payload}")
-    return Check("server", OK, f"{cfg.server.url} {payload}")
+    return Check("server", OK, cfg.server.url)
 
 
 def environment_summary() -> str:

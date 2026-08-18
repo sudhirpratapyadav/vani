@@ -5,5 +5,5 @@ Speech recognition runs on a remote GPU (Voxtral); this package is the
 local client: wake-word spotting, hotkey handling, recording, and typing.
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __all__ = ["__version__"]

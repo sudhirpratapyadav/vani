@@ -13,16 +13,18 @@ import os
 import queue
 import signal
 import sys
+import threading
 import time
 from typing import NoReturn
 
 from . import audio, hotkey, paths, state, wake
-from .client import Client, TranscribeError
-from .config import Config, ConfigError
+from .client import ServerError, check_health
+from .config import Config
 from .hotkey import HotkeyWatcher
 from .notify import NullNotifier, Notifier
 from .output import OutputError, Typist
 from .session import Event, Session
+from .stream import LiveStream, StreamError
 
 #: 0.125 s of 16 kHz mono audio — small enough for a responsive countdown.
 CHUNK_SEC = 0.125
@@ -37,11 +39,20 @@ class Daemon:
         self.cfg = cfg
         self.dry_run = dry_run
         self.notifier = NullNotifier() if dry_run else Notifier(cfg.output.notify)
-        self.client = Client(cfg)
+        #: A second notification slot, so a connectivity banner never eats the
+        #: live transcript (both update their own message in place).
+        self.health_notifier = NullNotifier() if dry_run else Notifier(cfg.output.notify)
         self.typist = Typist(cfg.output.typer, cfg.output.type_delay_ms)
         self.spotter = wake.NullSpotter() if dry_run else self._build_spotter()
-        self.session = Session(cfg, self.spotter, self.handle_clip, self.handle_event)
+        self.session = Session(cfg, self.spotter, self.handle_clip,
+                               self.handle_event, self.handle_chunk)
         self.events: "queue.Queue[str]" = queue.Queue()
+        #: The open realtime stream while recording.
+        self._live: LiveStream | None = None
+        self._live_text = ""
+        #: Last health verdict; None until the first probe has run.
+        self._server_ok: bool | None = None
+        self._health_wake = threading.Event()
         #: Set by the SIGUSR1 handler; see _install_signals for why not a queue.
         self.toggle_requested = False
         self.chunk_bytes = int(CHUNK_SEC * cfg.recording.sample_rate * audio.SAMPLE_WIDTH)
@@ -60,47 +71,71 @@ class Daemon:
         if event.kind == "started":
             log(f"recording started ({event.detail})")
             state.set_status(state.RECORDING)
+            self._start_live()
             self.notifier.show(
                 "● Listening — pause %.0fs to send, or press the key"
                 % self.cfg.recording.silence_sec, 60000, replace=True)
         elif event.kind == "countdown":
             state.set_countdown(event.seconds)
-            self.notifier.show("Sending in %.1fs — speak to continue" % event.seconds,
-                               60000, replace=True)
+            self.notifier.show("Sending in %.1fs — %s" % (
+                event.seconds, _tail(self._live_text) or "speak to continue"),
+                60000, replace=True)
         elif event.kind == "resumed":
             log("speech resumed, countdown cancelled")
             state.set_status(state.RECORDING)
-            self.notifier.show("● Listening...", 60000, replace=True)
+            self.notifier.show("● " + (_tail(self._live_text) or "Listening..."),
+                               60000, replace=True)
         elif event.kind == "finished":
             log("finishing (%s): %.1fs audio, mic=%s"
                 % (event.detail, event.seconds, audio.default_source()))
         elif event.kind == "discarded":
             log(f"discarded ({event.detail}): {event.seconds:.1f}s, nothing to send")
+            if self._live is not None:
+                self._live.abort()
+                self._live = None
             state.set_status(state.IDLE)
             self.notifier.show("(nothing captured, cancelled)", 2500, replace=True)
 
+    def _start_live(self) -> None:
+        """Open the realtime stream for this recording."""
+        self._live_text = ""
+        self._live = None
+        if not self.dry_run:
+            self._live = LiveStream(self.cfg, self.on_live_text)
+            self._live.start()
+
+    def handle_chunk(self, chunk: bytes) -> None:
+        if self._live is not None:
+            self._live.send(chunk)
+
+    def on_live_text(self, text: str) -> None:
+        """Words arriving mid-recording, on the stream's reader thread."""
+        self._live_text = text
+        self.notifier.show("● " + _tail(text), 60000, replace=True)
+
     def handle_clip(self, pcm: bytes) -> None:
-        """Transcribe a finished clip and type the result."""
+        """Finish the stream for a completed recording and type the result."""
         state.set_status(state.TRANSCRIBING)
-        if self.cfg.recording.auto_gain:
-            pcm, factor = audio.auto_gain(pcm)
-            if factor != 1.0:
-                log("auto-gain applied (x%.1f)" % factor)
+        live, self._live = self._live, None
 
         wav = audio.to_wav(pcm, self.cfg.recording.sample_rate)
         if self.cfg.output.save_last_wav and not state.save_last_wav(wav):
             log(f"could not save {paths.last_wav()}")
 
-        self.notifier.show("Transcribing %.1fs..."
-                           % audio.duration(pcm, self.cfg.recording.sample_rate),
-                           60000, replace=True)
-        try:
-            text = self.client.transcribe(wav)
-        except (TranscribeError, ConfigError) as exc:
-            log(f"send failed: {exc}")
-            self.notifier.show(f"Failed: {exc}", 6000, replace=True)
-            state.set_status(state.IDLE)
-            return
+        text = ""
+        if live is not None:
+            self.notifier.show("Finishing...", 60000, replace=True)
+            try:
+                text = live.finish(self.cfg.server.timeout_sec)
+            except StreamError as exc:
+                log(f"transcription failed: {exc}")
+                self.notifier.show(f"✗ Transcription failed: {exc}", 8000,
+                                   replace=True)
+                state.set_status(state.IDLE)
+                # Re-probe right away so "the stream died" comes with an
+                # up-to-date answer to "is the server down?".
+                self._health_wake.set()
+                return
 
         if not text:
             log("server returned no text")
@@ -111,6 +146,44 @@ class Daemon:
         deliver(text, self.typist, self.notifier, self.cfg)
         state.set_status(state.IDLE)
 
+    # -- server health -----------------------------------------------------
+
+    def _health_loop(self) -> None:
+        """Probe the server now, then on an interval, then whenever woken.
+
+        The user is informed on every change of verdict and left alone
+        otherwise: one banner when the server goes away, one when it is back,
+        never one per failed recording.
+        """
+        interval = self.cfg.server.health_check_min * 60
+        while True:
+            self._probe_server()
+            if interval <= 0:
+                return
+            self._health_wake.wait(interval)
+            self._health_wake.clear()
+
+    def _probe_server(self) -> None:
+        try:
+            check_health(self.cfg)
+            ok, detail = True, ""
+        except ServerError as exc:
+            ok, detail = False, str(exc)
+        state.set_server(ok, detail)
+        if ok == self._server_ok:
+            return
+        was, self._server_ok = self._server_ok, ok
+        if ok:
+            log(f"server online: {self.cfg.health_url}")
+            if was is False:
+                self.health_notifier.show("✓ Transcription server is back online",
+                                          4000, replace=True)
+        else:
+            log(f"server unreachable: {detail}")
+            self.health_notifier.show(
+                "✗ Transcription server unreachable — dictation will not work.\n"
+                + detail, 10000, replace=True)
+
     # -- main loop ---------------------------------------------------------
 
     def run(self) -> NoReturn:
@@ -118,17 +191,19 @@ class Daemon:
         state.write_pidfile(paths.daemon_pidfile())
         state.set_status(state.IDLE)
         self._install_signals()
+        threading.Thread(target=self._health_loop, daemon=True).start()
 
         if self.cfg.hotkey.enabled:
             watcher = HotkeyWatcher(self.cfg.hotkey.keycode, self.events,
                                     self.cfg.hotkey.debounce_sec, on_error=log)
             watcher.start()
 
-        log("vani up: wake=%s | key=%s | silence stop=%ss warn=%ss | typing via %s"
+        log("vani up: wake=%s | key=%s | silence stop=%ss warn=%ss | %s | typing via %s"
             % (self.spotter.describe,
                self.cfg.hotkey.keycode if self.cfg.hotkey.enabled else "disabled",
                _num(self.cfg.recording.silence_sec),
                _num(self.cfg.recording.silence_warn_sec),
+               self.cfg.server.url,
                self.typist.backend))
 
         mic = audio.Microphone(self.cfg.recording.sample_rate, self.chunk_bytes)
@@ -169,6 +244,7 @@ class Daemon:
             log("shutting down")
             state.set_status(state.IDLE)
             state.clear_pidfile(paths.daemon_pidfile())
+            state.clear_pidfile(paths.server_file())  # stale verdicts help nobody
             hotkey.sweep_stale_watchers()
             sys.exit(0)
 
@@ -196,6 +272,12 @@ def deliver(text: str, typist: Typist, notifier: Notifier, cfg: Config) -> None:
 
 def _num(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _tail(text: str, limit: int = 90) -> str:
+    """The end of the live transcript — the words just spoken, not the start."""
+    text = text.strip()
+    return text if len(text) <= limit else "…" + text[-limit:]
 
 
 def is_running() -> int | None:

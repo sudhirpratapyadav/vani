@@ -166,6 +166,20 @@ class SessionTest(unittest.TestCase):
         session.on_hotkey()
         self.assertEqual(len(self.clips), 2)
 
+    def test_on_chunk_mirrors_exactly_what_the_clip_buffers(self):
+        """The live stream must see the same audio the batch fallback would."""
+        chunks: list[bytes] = []
+        session = Session(self.cfg, ScriptedSpotter(fire_after=2),
+                          self.clips.append, self.events.append, chunks.append)
+        self.feed(session, silence(0.5) + tone(1.0) + silence(1.5))
+        self.assertEqual(len(self.clips), 1)
+        # Everything buffered was mirrored, in order; idle audio and the
+        # wake-word chunk itself were not.
+        streamed = b"".join(chunks)
+        self.assertTrue(streamed.startswith(self.clips[0]))  # clip = streamed minus
+        self.assertGreater(len(streamed), len(self.clips[0]))  # the trimmed tail
+        self.assertEqual(session.buffered_sec, 0.0)
+
     # -- adaptive threshold ------------------------------------------------
 
     def test_noise_floor_rises_in_a_loud_room(self):

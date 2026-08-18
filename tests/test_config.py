@@ -5,6 +5,7 @@ import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from vani import config, toml_lite
 from vani.config import Config, ConfigError
@@ -12,7 +13,7 @@ from vani.config import Config, ConfigError
 SAMPLE = """
 # a comment
 [server]
-url = "https://example.test"
+url = "wss://example.test/v1/realtime"
 token = "secret"   # trailing comment
 
 [wake]
@@ -22,7 +23,7 @@ phrases = ["hey there", "hi there"]
 [recording]
 silence_sec = 2.5
 max_sec = 60
-auto_gain = false
+min_sec = 0.5
 """
 
 
@@ -34,12 +35,12 @@ class TomlLiteTest(unittest.TestCase):
 
     def test_tables_and_scalars(self):
         data = self.parse(SAMPLE)
-        self.assertEqual(data["server"]["url"], "https://example.test")
+        self.assertEqual(data["server"]["url"], "wss://example.test/v1/realtime")
         self.assertEqual(data["server"]["token"], "secret")
         self.assertIs(data["wake"]["enabled"], True)
         self.assertEqual(data["recording"]["silence_sec"], 2.5)
         self.assertEqual(data["recording"]["max_sec"], 60)
-        self.assertIs(data["recording"]["auto_gain"], False)
+        self.assertEqual(data["recording"]["min_sec"], 0.5)
 
     def test_arrays_inline_and_multiline(self):
         self.assertEqual(self.parse('a = ["x", "y"]')["a"], ["x", "y"])
@@ -76,7 +77,7 @@ class ConfigLoadTest(unittest.TestCase):
 
     def test_load_applies_values_and_keeps_defaults(self):
         cfg = config.load(self.write(SAMPLE))
-        self.assertEqual(cfg.server.url, "https://example.test")
+        self.assertEqual(cfg.server.url, "wss://example.test/v1/realtime")
         self.assertEqual(cfg.wake.phrases, ["hey there", "hi there"])
         self.assertEqual(cfg.recording.silence_sec, 2.5)
         self.assertEqual(cfg.recording.silence_warn_sec, 1.0)  # untouched default
@@ -114,21 +115,23 @@ class ConfigLoadTest(unittest.TestCase):
         self.assertEqual(config.load(missing, required=False).server.url,
                          Config().server.url)
 
-    def test_urls(self):
-        cfg = config.load(self.write('[server]\nurl = "https://x.test/"'))
-        self.assertEqual(cfg.transcribe_url, "https://x.test/transcribe")
-        self.assertEqual(cfg.health_url, "https://x.test/healthz")
+    def test_health_url_is_the_https_side_of_the_wss_host(self):
+        cfg = config.load(self.write('[server]\nurl = "wss://x.test/v1/realtime"'))
+        self.assertEqual(cfg.health_url, "https://x.test/health")
+        cfg.server.url = "ws://gpu:8001/v1/realtime"
+        self.assertEqual(cfg.health_url, "http://gpu:8001/health")
 
     def test_token_from_file(self):
         token = Path(tempfile.mkdtemp()) / "token"
         token.write_text("abc123\n")
         cfg = config.load(self.write(f'[server]\ntoken_file = "{token}"'))
-        self.assertEqual(cfg.require_token(), "abc123")
+        self.assertEqual(cfg.resolved_token(), "abc123")
 
-    def test_missing_token_raises(self):
-        cfg = config.load(self.write('[server]\nurl = "https://x.test"'))
-        with self.assertRaises(ConfigError):
-            cfg.require_token()
+    def test_missing_token_is_fine(self):
+        """The realtime endpoint does not require auth; no token, no error."""
+        cfg = config.load(self.write('[server]\nurl = "wss://x.test"'))
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(cfg.resolved_token(), "")
 
     def test_render_roundtrips(self):
         original = config.load(self.write(SAMPLE))
@@ -136,7 +139,31 @@ class ConfigLoadTest(unittest.TestCase):
         self.assertEqual(rewritten.server.url, original.server.url)
         self.assertEqual(rewritten.wake.phrases, original.wake.phrases)
         self.assertEqual(rewritten.recording.silence_sec, original.recording.silence_sec)
-        self.assertIs(rewritten.recording.auto_gain, original.recording.auto_gain)
+
+
+class MigrationTest(unittest.TestCase):
+    """A config written by the batch-era app must load, not error."""
+
+    def write(self, text: str) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config.toml"
+        tmp.write_text(text)
+        return tmp
+
+    def test_batch_era_config_loads_with_defaults_and_keeps_the_token(self):
+        cfg = config.load(self.write(
+            '[server]\nurl = "https://ai.lsquarelabs.com"\ntoken = "tok"\n'
+            'endpoint = "/transcribe"\ntimeout_sec = 120\n'
+            "[recording]\nauto_gain = true\nsilence_sec = 2\n"))
+        self.assertEqual(cfg.server.url, Config().server.url)  # migrated
+        self.assertEqual(cfg.server.token, "tok")              # preserved
+        self.assertEqual(cfg.server.timeout_sec, Config().server.timeout_sec)
+        self.assertEqual(cfg.recording.silence_sec, 2.0)       # preserved
+
+    def test_interim_stream_section_is_folded_into_server(self):
+        cfg = config.load(self.write(
+            '[stream]\nurl = "wss://x.test/v1/realtime"\ndone_timeout_sec = 9\n'))
+        self.assertEqual(cfg.server.url, "wss://x.test/v1/realtime")
+        self.assertEqual(cfg.server.timeout_sec, 9.0)
 
 
 class DumpTest(unittest.TestCase):
@@ -189,7 +216,8 @@ class LegacyImportTest(unittest.TestCase):
             'DICTATE_SILENCE_SEC="2"\n'
             'DICTATE_MAXSEC="90"\n')
         cfg = config.from_legacy(legacy)
-        self.assertEqual(cfg.server.url, "https://old.test")
+        # The old batch URL is not carried over — nothing can talk to it now.
+        self.assertEqual(cfg.server.url, Config().server.url)
         self.assertEqual(cfg.server.token, "tok")
         self.assertEqual(cfg.wake.phrases, ["hey claude", "hi claude"])
         self.assertEqual(cfg.recording.silence_sec, 2.0)
