@@ -47,6 +47,25 @@ def read_status() -> tuple[str, float]:
     return raw if raw in (IDLE, RECORDING, TRANSCRIBING) else IDLE, 0.0
 
 
+def set_live(text: str) -> None:
+    """Publish the current recording's transcript-so-far for the overlay."""
+    path = paths.live_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(text)
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def read_live() -> str:
+    try:
+        return paths.live_file().read_text()
+    except OSError:
+        return ""
+
+
 def set_server(ok: bool, detail: str = "") -> None:
     """Record the last health-check verdict for the tray and `vani status`."""
     path = paths.server_file()

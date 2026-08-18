@@ -128,6 +128,35 @@ class LiveClipTest(unittest.TestCase):
         self.assertIsNone(d._live)
         self.assertFalse(live.finished)
 
+    def test_sigusr2_cancels_the_recording(self):
+        saved = signal.getsignal(signal.SIGUSR2)
+        self.addCleanup(signal.signal, signal.SIGUSR2, saved)
+        d = self.make()
+        d._install_signals()
+        d.session.on_hotkey()
+        self.assertTrue(d.session.recording)
+        os.kill(os.getpid(), signal.SIGUSR2)
+        self.assertTrue(d.cancel_requested)
+        self.assertTrue(d._pump(FakeMic([SILENT_CHUNK])))  # mic restart
+        self.assertFalse(d.session.recording)
+
+    def test_live_notifications_pause_while_the_overlay_is_alive(self):
+        d = self.make()
+        state.write_pidfile(paths.tray_pidfile())  # this process: alive
+        d.session.on_hotkey()          # emits "started" -> checks the pidfile
+        self.assertTrue(d._ui_live)
+        before = len(d.notifier.messages)
+        d.on_live_text("hello overlay")
+        self.assertEqual(len(d.notifier.messages), before)  # no banner
+        self.assertEqual(state.read_live(), "hello overlay")  # file instead
+
+    def test_live_notifications_return_without_the_overlay(self):
+        d = self.make()
+        d.session.on_hotkey()
+        self.assertFalse(d._ui_live)
+        d.on_live_text("hello notification")
+        self.assertIn("● hello notification", d.notifier.messages)
+
     def test_live_text_marks_the_session_as_having_heard_speech(self):
         d = self.make()
         d.session.on_hotkey()

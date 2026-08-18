@@ -89,6 +89,21 @@ class HotkeyConfig:
 
 
 @dataclass
+class UiConfig:
+    """The live-caption overlay, drawn by the tray process while recording."""
+
+    #: Show the overlay at all. Without it (or without the tray process),
+    #: live text falls back to the notification.
+    enabled: bool = True
+    #: Overlay width in pixels; text wraps inside it.
+    width: int = 520
+    #: The overlay grows with the text up to this height, then scrolls.
+    max_height: int = 260
+    #: Background opacity, 0.2 (glassy) to 1.0 (solid).
+    opacity: float = 0.88
+
+
+@dataclass
 class OutputConfig:
     #: How to deliver text: auto, xdotool, ydotool, clipboard, or stdout.
     typer: str = "auto"
@@ -108,6 +123,7 @@ class Config:
     wake: WakeConfig = field(default_factory=WakeConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     hotkey: HotkeyConfig = field(default_factory=HotkeyConfig)
+    ui: UiConfig = field(default_factory=UiConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     #: Where this config was read from (empty when built from defaults).
     source: str = ""
@@ -164,7 +180,7 @@ def load(path: Path | None = None, *, required: bool = True) -> Config:
 
     cfg = Config(source=str(path))
     _migrate_legacy(data)
-    for section_name in ("server", "wake", "recording", "hotkey", "output"):
+    for section_name in ("server", "wake", "recording", "hotkey", "ui", "output"):
         section = data.pop(section_name, {})
         if not isinstance(section, dict):
             raise ConfigError(f"{path}: [{section_name}] must be a table")
@@ -272,6 +288,10 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("server.timeout_sec must be positive")
     if cfg.server.health_check_min < 0:
         raise ConfigError("server.health_check_min must not be negative")
+    if cfg.ui.width <= 0 or cfg.ui.max_height <= 0:
+        raise ConfigError("ui.width and ui.max_height must be positive")
+    if not 0.2 <= cfg.ui.opacity <= 1.0:
+        raise ConfigError("ui.opacity must be between 0.2 and 1.0")
 
 
 def _apply_env(cfg: Config) -> Config:
@@ -352,7 +372,7 @@ def dump(cfg: Config, *, mask_token: bool = False) -> str:
     shows up here without anyone remembering to update a string.
     """
     out: list[str] = []
-    for name in ("server", "wake", "recording", "hotkey", "output"):
+    for name in ("server", "wake", "recording", "hotkey", "ui", "output"):
         section = getattr(cfg, name)
         out.append(f"[{name}]")
         for spec in fields(section):

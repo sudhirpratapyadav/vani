@@ -35,7 +35,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("toggle", help="start/stop a push-to-talk recording")
     p.set_defaults(func=cmd_toggle)
 
-    p = sub.add_parser("tray", help="run the tray indicator")
+    p = sub.add_parser("cancel", help="discard the current recording (nothing is typed)")
+    p.set_defaults(func=cmd_cancel)
+
+    p = sub.add_parser("tray", help="run the tray indicator and live overlay")
     p.set_defaults(func=cmd_tray)
 
     p = sub.add_parser("status", help="show what the daemon is doing right now")
@@ -114,6 +117,16 @@ def cmd_toggle(args: argparse.Namespace) -> int:
     from .toggle import toggle
 
     return toggle(_load(args))
+
+
+def cmd_cancel(args: argparse.Namespace) -> int:
+    from . import daemon as daemon_module
+
+    if daemon_module.signal_cancel():
+        print("cancelled")
+        return 0
+    print("no daemon is running", file=sys.stderr)
+    return 1
 
 
 def cmd_tray(args: argparse.Namespace) -> int:

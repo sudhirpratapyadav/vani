@@ -55,6 +55,11 @@ class Daemon:
         self._health_wake = threading.Event()
         #: Set by the SIGUSR1 handler; see _install_signals for why not a queue.
         self.toggle_requested = False
+        #: Set by the SIGUSR2 handler: discard the recording, type nothing.
+        self.cancel_requested = False
+        #: Whether the overlay process was alive when recording started; live
+        #: text and the countdown go to it instead of the notification then.
+        self._ui_live = False
         self.chunk_bytes = int(CHUNK_SEC * cfg.recording.sample_rate * audio.SAMPLE_WIDTH)
 
     def _build_spotter(self):
@@ -73,23 +78,29 @@ class Daemon:
             # invisible in every other line of the log.
             log(f"recording started ({event.detail}) mic="
                 f"{self.cfg.recording.device or audio.default_source()}")
+            state.set_live("")
             state.set_status(state.RECORDING)
+            self._ui_live = (self.cfg.ui.enabled and
+                             state.read_pidfile(paths.tray_pidfile()) is not None)
             self._start_live()
-            self.notifier.show(
-                "● Listening — pause %.0fs to finish, or press the key"
-                % self.cfg.recording.silence_sec, 60000, replace=True)
+            if not self._ui_live:
+                self.notifier.show(
+                    "● Listening — pause %.0fs to finish, or press the key"
+                    % self.cfg.recording.silence_sec, 60000, replace=True)
         elif event.kind == "countdown":
             state.set_countdown(event.seconds)
-            # "Typing", not "sending": the audio streamed while they spoke,
-            # and this clock only decides when the recording ends.
-            self.notifier.show("Typing in %.1fs — %s" % (
-                event.seconds, _tail(self._live_text) or "speak to continue"),
-                60000, replace=True)
+            if not self._ui_live:
+                # "Typing", not "sending": the audio streamed while they
+                # spoke; this clock only decides when the recording ends.
+                self.notifier.show("Typing in %.1fs — %s" % (
+                    event.seconds, _tail(self._live_text) or "speak to continue"),
+                    60000, replace=True)
         elif event.kind == "resumed":
             log("speech resumed, countdown cancelled")
             state.set_status(state.RECORDING)
-            self.notifier.show("● " + (_tail(self._live_text) or "Listening..."),
-                               60000, replace=True)
+            if not self._ui_live:
+                self.notifier.show("● " + (_tail(self._live_text) or "Listening..."),
+                                   60000, replace=True)
         elif event.kind == "finished":
             log("finishing (%s): %.1fs audio, mic=%s"
                 % (event.detail, event.seconds, audio.default_source()))
@@ -98,8 +109,12 @@ class Daemon:
             if self._live is not None:
                 self._live.abort()
                 self._live = None
+            state.set_live("")
             state.set_status(state.IDLE)
-            self.notifier.show("(nothing captured, cancelled)", 2500, replace=True)
+            self.notifier.show("Cancelled — nothing typed"
+                               if event.detail == "cancelled"
+                               else "(nothing captured, cancelled)",
+                               2500, replace=True)
 
     def _start_live(self) -> None:
         """Open the realtime stream for this recording."""
@@ -120,7 +135,9 @@ class Daemon:
         # in a rumbly room they are the only evidence that arms the silence
         # stop and keeps the clip from being discarded as empty.
         self.session.notice_speech()
-        self.notifier.show("● " + _tail(text), 60000, replace=True)
+        state.set_live(text)
+        if not self._ui_live:
+            self.notifier.show("● " + _tail(text), 60000, replace=True)
 
     def handle_clip(self, pcm: bytes) -> None:
         """Finish the stream for a completed recording and type the result."""
@@ -140,6 +157,7 @@ class Daemon:
                 log(f"transcription failed: {exc}")
                 self.notifier.show(f"✗ Transcription failed: {exc}", 8000,
                                    replace=True)
+                state.set_live("")
                 state.set_status(state.IDLE)
                 # Re-probe right away so "the stream died" comes with an
                 # up-to-date answer to "is the server down?".
@@ -153,9 +171,11 @@ class Daemon:
             self.notifier.show("(no speech detected — mic: %s)"
                                % (self.cfg.recording.device or audio.default_source()),
                                5000, replace=True)
+            state.set_live("")
             state.set_status(state.IDLE)
             return
 
+        state.set_live(text)  # the overlay lingers on the final transcript
         deliver(text, self.typist, self.notifier, self.cfg)
         state.set_status(state.IDLE)
 
@@ -234,11 +254,14 @@ class Daemon:
         """Feed the session until it asks for a restart. False = mic died."""
         for chunk in mic.chunks():
             restart = False
+            if self.cancel_requested:
+                self.cancel_requested = False
+                restart = self.session.cancel()
             if self.toggle_requested:
                 # Cleared first: a signal arriving during on_hotkey sets the
                 # flag again and is handled on the next chunk rather than lost.
                 self.toggle_requested = False
-                restart = self.session.on_hotkey()
+                restart = self.session.on_hotkey() or restart
             while not self.events.empty():
                 self.events.get_nowait()
                 restart = self.session.on_hotkey() or restart
@@ -254,6 +277,9 @@ class Daemon:
             # it would block forever on a lock it already holds itself.
             self.toggle_requested = True
 
+        def on_cancel(_sig, _frm):
+            self.cancel_requested = True
+
         def on_term(_sig, _frm):
             log("shutting down")
             state.set_status(state.IDLE)
@@ -263,6 +289,7 @@ class Daemon:
             sys.exit(0)
 
         signal.signal(signal.SIGUSR1, on_toggle)
+        signal.signal(signal.SIGUSR2, on_cancel)
         signal.signal(signal.SIGTERM, on_term)
         signal.signal(signal.SIGINT, on_term)
 
@@ -288,7 +315,7 @@ def _num(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else str(value)
 
 
-def _tail(text: str, limit: int = 90) -> str:
+def _tail(text: str, limit: int = 160) -> str:
     """The end of the live transcript — the words just spoken, not the start."""
     text = text.strip()
     return text if len(text) <= limit else "…" + text[-limit:]
@@ -301,11 +328,20 @@ def is_running() -> int | None:
 
 def signal_toggle() -> bool:
     """Ask a running daemon to start/stop recording. False if none is running."""
+    return _signal(signal.SIGUSR1)
+
+
+def signal_cancel() -> bool:
+    """Ask a running daemon to discard the current recording."""
+    return _signal(signal.SIGUSR2)
+
+
+def _signal(sig: int) -> bool:
     pid = is_running()
     if pid is None:
         return False
     try:
-        os.kill(pid, signal.SIGUSR1)
+        os.kill(pid, sig)
     except OSError:
         return False
     return True

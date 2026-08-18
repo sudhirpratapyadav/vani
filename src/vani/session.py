@@ -120,6 +120,21 @@ class Session:
         self._start("key press")
         return False
 
+    def cancel(self) -> bool:
+        """Discard the current recording without sending anything.
+
+        Returns True when a recording was actually cancelled — the caller
+        restarts the microphone, exactly as after a finish.
+        """
+        if not self.recording:
+            return False
+        seconds = self.buffered_sec
+        self.recording = False
+        self._reset_buffer()
+        self.spotter.reset()
+        self._emit("discarded", "cancelled", seconds=seconds)
+        return True
+
     def notice_speech(self) -> None:
         """External proof that someone is talking — the streaming ASR
         returned words for this recording.

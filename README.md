@@ -69,9 +69,17 @@ While it counts down, speaking again cancels the send and recording continues.
 Pressing the key during a recording sends it immediately.
 
 While you speak, the audio streams to the realtime endpoint and the text
-appears live in the notification, a word or two behind your voice. Nothing is
-typed until the recording ends — then the final transcript goes into the
-focused field in one piece, so there is never anything to un-type.
+appears live in a small translucent overlay at the bottom of the screen, a
+word or two behind your voice. The overlay grows with the text up to a cap
+and then scrolls; its header shows the state ("● listening", "⏸ typing in
+2s — speak to continue"), so the countdown never covers the words. Nothing
+is typed until the recording ends — then the final transcript goes into the
+focused field in one piece, so there is never anything to un-type. Without
+the tray process (which draws the overlay), live text falls back to the
+notification.
+
+`vani cancel` — or the tray's "Cancel (discard)" while recording — throws
+the recording away instead of typing it.
 
 The daemon checks the server's health at startup and every few minutes, and
 tells you — once, not per recording — when it becomes unreachable and when it
@@ -83,7 +91,8 @@ is back. The tray shows the current verdict; so does `vani status`.
 |---|---|
 | `vani start` | run the daemon in the foreground (systemd normally does this) |
 | `vani toggle` | start/stop a recording — the daemon's if it's running, else standalone |
-| `vani tray` | tray indicator: state, server health, transcripts, settings |
+| `vani cancel` | discard the current recording; nothing is typed |
+| `vani tray` | the UI process: tray indicator + live-caption overlay |
 | `vani status` | daemon state, server connectivity, last transcript |
 | `vani service status\|start\|stop\|restart\|enable\|disable` | manage the background services |
 | `vani mic [list\|set N\|test]` | pick the microphone; `test` records 3 s and transcribes it |
@@ -172,6 +181,9 @@ show` prints the effective values with the token masked.
 | `recording.speech_factor` | `3.5` | how far above the noise floor counts as speech |
 | `recording.min_speech_level` | `350` | absolute bar for speech; lower for a quiet mic |
 | `hotkey.enabled` / `.keycode` | `true` / `171` | the watched key |
+| `ui.enabled` | `true` | the live-caption overlay |
+| `ui.width` / `.max_height` | `520` / `260` | overlay size in px; height grows to the cap, then scrolls |
+| `ui.opacity` | `0.88` | overlay background opacity (0.2–1.0) |
 | `output.typer` | `auto` | `xdotool`, `ydotool`, `clipboard`, `stdout` |
 | `output.notify` / `.history` | `true` | desktop notifications / transcript log |
 

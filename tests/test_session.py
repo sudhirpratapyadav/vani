@@ -180,6 +180,21 @@ class SessionTest(unittest.TestCase):
         self.assertGreater(len(streamed), len(self.clips[0]))  # the trimmed tail
         self.assertEqual(session.buffered_sec, 0.0)
 
+    def test_cancel_discards_without_a_clip(self):
+        session = self.make()
+        session.on_hotkey()
+        self.feed(session, tone(1.0))
+        self.assertTrue(session.cancel())   # True: the mic must be restarted
+        self.assertFalse(session.recording)
+        self.assertEqual(self.clips, [])
+        discarded = [e for e in self.events if e.kind == "discarded"]
+        self.assertEqual(discarded[0].detail, "cancelled")
+
+    def test_cancel_while_idle_is_a_noop(self):
+        session = self.make()
+        self.assertFalse(session.cancel())
+        self.assertEqual(self.kinds(), [])
+
     # -- speech noticed by the ASR, not the level detector -----------------
 
     def test_asr_words_count_as_speech_when_levels_never_do(self):

@@ -72,6 +72,17 @@ def daemon_pidfile() -> Path:
     return runtime_dir() / "daemon.pid"
 
 
+def tray_pidfile() -> Path:
+    """Written by the UI process; its liveness decides whether the daemon
+    shows live text in notifications or leaves that to the overlay."""
+    return runtime_dir() / "tray.pid"
+
+
+def live_file() -> Path:
+    """The transcript-so-far of the current recording, for the overlay."""
+    return runtime_dir() / "live"
+
+
 def toggle_pidfile() -> Path:
     return runtime_dir() / "toggle-arecord.pid"
 
