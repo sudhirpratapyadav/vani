@@ -157,6 +157,24 @@ class LiveClipTest(unittest.TestCase):
         d.on_live_text("hello notification")
         self.assertIn("● hello notification", d.notifier.messages)
 
+    def test_pause_signal_cancels_the_recording_and_asks_for_a_restart(self):
+        saved = signal.getsignal(daemon.PAUSE_SIGNAL)
+        self.addCleanup(signal.signal, daemon.PAUSE_SIGNAL, saved)
+        d = self.make()
+        d._install_signals()
+        d.session.on_hotkey()
+        os.kill(os.getpid(), daemon.PAUSE_SIGNAL)
+        self.assertTrue(d.paused)
+        # The pump hands control back so run() can close the mic and park.
+        self.assertTrue(d._pump(FakeMic([SILENT_CHUNK])))
+        self.assertFalse(d.session.recording)
+        os.kill(os.getpid(), daemon.PAUSE_SIGNAL)  # toggle back
+        self.assertFalse(d.paused)
+
+    def test_disabled_status_roundtrips(self):
+        state.set_status(state.DISABLED)
+        self.assertEqual(state.read_status(), (state.DISABLED, 0.0))
+
     def test_live_text_marks_the_session_as_having_heard_speech(self):
         d = self.make()
         d.session.on_hotkey()

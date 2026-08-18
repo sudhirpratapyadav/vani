@@ -81,6 +81,12 @@ notification.
 `vani cancel` — or the tray's "Cancel (discard)" while recording — throws
 the recording away instead of typing it.
 
+`vani disable` (tray: "Disable dictation") closes the microphone entirely:
+no wake-word spotting, no key, nothing captured rather than
+captured-and-ignored — the same privacy stance as quitting, without losing
+the daemon. The tray icon shows a muted mic; `vani enable` resumes. Key
+presses made while disabled are dropped, not queued.
+
 The daemon checks the server's health at startup and every few minutes, and
 tells you — once, not per recording — when it becomes unreachable and when it
 is back. The tray shows the current verdict; so does `vani status`.
@@ -92,6 +98,7 @@ is back. The tray shows the current verdict; so does `vani status`.
 | `vani start` | run the daemon in the foreground (systemd normally does this) |
 | `vani toggle` | start/stop a recording — the daemon's if it's running, else standalone |
 | `vani cancel` | discard the current recording; nothing is typed |
+| `vani disable` / `enable` | close/reopen the microphone — disabled means nothing is captured at all |
 | `vani tray` | the UI process: tray indicator + live-caption overlay |
 | `vani status` | daemon state, server connectivity, last transcript |
 | `vani service status\|start\|stop\|restart\|enable\|disable` | manage the background services |

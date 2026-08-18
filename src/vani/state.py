@@ -16,6 +16,7 @@ IDLE = "idle"
 RECORDING = "recording"
 TRANSCRIBING = "transcribing"
 SILENCE = "silence"  # written as "silence:<seconds remaining>"
+DISABLED = "disabled"  # the daemon is up but the microphone is closed
 
 
 def set_status(state: str) -> None:
@@ -44,7 +45,7 @@ def read_status() -> tuple[str, float]:
             return SILENCE, float(raw.split(":", 1)[1])
         except ValueError:
             return SILENCE, 0.0
-    return raw if raw in (IDLE, RECORDING, TRANSCRIBING) else IDLE, 0.0
+    return raw if raw in (IDLE, RECORDING, TRANSCRIBING, DISABLED) else IDLE, 0.0
 
 
 def set_live(text: str) -> None:

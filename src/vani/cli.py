@@ -38,6 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("cancel", help="discard the current recording (nothing is typed)")
     p.set_defaults(func=cmd_cancel)
 
+    p = sub.add_parser("disable",
+                       help="close the microphone — no wake word, no key, "
+                            "nothing captured (daemon keeps running)")
+    p.set_defaults(func=lambda a: _set_enabled(False))
+
+    p = sub.add_parser("enable", help="reopen the microphone and resume listening")
+    p.set_defaults(func=lambda a: _set_enabled(True))
+
     p = sub.add_parser("tray", help="run the tray indicator and live overlay")
     p.set_defaults(func=cmd_tray)
 
@@ -129,6 +137,20 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return 1
 
 
+def _set_enabled(want: bool) -> int:
+    from . import daemon as daemon_module
+
+    current, _ = state.read_status()
+    if want != (current == state.DISABLED):
+        print(f"dictation is already {'enabled' if want else 'disabled'}")
+        return 0
+    if not daemon_module.signal_pause_toggle():
+        print("no daemon is running", file=sys.stderr)
+        return 1
+    print(f"dictation {'enabled' if want else 'disabled'}")
+    return 0
+
+
 def cmd_tray(args: argparse.Namespace) -> int:
     from .tray import run
 
@@ -145,6 +167,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         state.RECORDING: "recording",
         state.TRANSCRIBING: "transcribing",
         state.SILENCE: f"typing in {countdown:.1f}s",
+        state.DISABLED: "disabled (microphone closed)",
     }[current]
     print(f"state:  {label}")
     print(f"daemon: {'running (pid %d)' % pid if pid else 'not running'}")

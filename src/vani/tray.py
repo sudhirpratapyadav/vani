@@ -35,12 +35,14 @@ ICONS = {
     state.RECORDING: "media-record-symbolic",
     state.SILENCE: "appointment-soon-symbolic",
     state.TRANSCRIBING: "emblem-synchronizing-symbolic",
+    state.DISABLED: "microphone-sensitivity-muted-symbolic",
 }
 LABELS = {
     state.IDLE: "Idle — press the key or say the wake word",
     state.RECORDING: "● Recording... (pause to finish)",
     state.SILENCE: "Typing soon — speak to continue",
     state.TRANSCRIBING: "Transcribing...",
+    state.DISABLED: "Disabled — microphone closed",
 }
 MAX_ITEM_CHARS = 60
 RECENT_ITEMS = 5
@@ -220,7 +222,7 @@ def run() -> int:
             if self.overlay is None:
                 return True
             status, countdown = state.read_status()
-            if status != state.IDLE:
+            if status in (state.RECORDING, state.SILENCE, state.TRANSCRIBING):
                 self._hide_at = None
                 self.overlay.update(status, countdown, state.read_live())
             elif self.overlay.visible:
@@ -244,16 +246,24 @@ def run() -> int:
             self._append_label(LABELS[current])
             self._append_label(self._server_label())
 
-            toggle = Gtk.MenuItem(
-                label="Stop & type" if current in (state.RECORDING, state.SILENCE)
-                else "Start dictation")
-            toggle.connect("activate", lambda *_: self.run_vani("toggle"))
-            self.menu.append(toggle)
+            if current != state.DISABLED:
+                toggle = Gtk.MenuItem(
+                    label="Stop & type" if current in (state.RECORDING, state.SILENCE)
+                    else "Start dictation")
+                toggle.connect("activate", lambda *_: self.run_vani("toggle"))
+                self.menu.append(toggle)
 
             if current in (state.RECORDING, state.SILENCE):
                 cancel = Gtk.MenuItem(label="Cancel (discard)")
                 cancel.connect("activate", lambda *_: self.run_vani("cancel"))
                 self.menu.append(cancel)
+
+            onoff = Gtk.MenuItem(
+                label="Enable dictation" if current == state.DISABLED
+                else "Disable dictation (close mic)")
+            onoff.connect("activate", lambda *_: self.run_vani(
+                "enable" if current == state.DISABLED else "disable"))
+            self.menu.append(onoff)
 
             self.menu.append(Gtk.SeparatorMenuItem())
             entries = state.read_history(RECENT_ITEMS)

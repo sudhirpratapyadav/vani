@@ -29,6 +29,9 @@ from .stream import LiveStream, StreamError
 #: 0.125 s of 16 kHz mono audio — small enough for a responsive countdown.
 CHUNK_SEC = 0.125
 
+#: Toggles disabled mode (mic closed). USR1/USR2 are taken by toggle/cancel.
+PAUSE_SIGNAL = signal.SIGRTMIN + 1
+
 
 def log(msg: str) -> None:
     print("[%s] %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
@@ -57,6 +60,9 @@ class Daemon:
         self.toggle_requested = False
         #: Set by the SIGUSR2 handler: discard the recording, type nothing.
         self.cancel_requested = False
+        #: Flipped by the pause signal. While True the microphone is closed —
+        #: nothing is captured, not captured-and-ignored.
+        self.paused = False
         #: Whether the overlay process was alive when recording started; live
         #: text and the countdown go to it instead of the notification then.
         self._ui_live = False
@@ -242,6 +248,9 @@ class Daemon:
         mic = audio.Microphone(self.cfg.recording.sample_rate, self.chunk_bytes,
                                self.cfg.recording.device or None)
         while True:
+            if self.paused:
+                self._park()
+                continue
             mic.open()
             try:
                 if not self._pump(mic):
@@ -250,9 +259,30 @@ class Daemon:
             finally:
                 mic.close()
 
+    def _park(self) -> None:
+        """Disabled: sit with the microphone closed until re-enabled."""
+        log("dictation disabled — microphone closed")
+        state.set_status(state.DISABLED)
+        self.notifier.show("Dictation disabled — not listening", 3000, replace=True)
+        while self.paused:
+            time.sleep(0.2)
+            # Key presses made while disabled must not fire on re-enable.
+            while not self.events.empty():
+                self.events.get_nowait()
+            self.toggle_requested = False
+            self.cancel_requested = False
+        log("dictation enabled")
+        state.set_status(state.IDLE)
+        self.notifier.show("Dictation enabled", 2500, replace=True)
+
     def _pump(self, mic: audio.Microphone) -> bool:
         """Feed the session until it asks for a restart. False = mic died."""
         for chunk in mic.chunks():
+            if self.paused:
+                # Cancel whatever is open and hand back to run(), which
+                # closes the microphone and parks.
+                self.session.cancel()
+                return True
             restart = False
             if self.cancel_requested:
                 self.cancel_requested = False
@@ -280,6 +310,9 @@ class Daemon:
         def on_cancel(_sig, _frm):
             self.cancel_requested = True
 
+        def on_pause(_sig, _frm):
+            self.paused = not self.paused
+
         def on_term(_sig, _frm):
             log("shutting down")
             state.set_status(state.IDLE)
@@ -290,6 +323,7 @@ class Daemon:
 
         signal.signal(signal.SIGUSR1, on_toggle)
         signal.signal(signal.SIGUSR2, on_cancel)
+        signal.signal(PAUSE_SIGNAL, on_pause)
         signal.signal(signal.SIGTERM, on_term)
         signal.signal(signal.SIGINT, on_term)
 
@@ -334,6 +368,11 @@ def signal_toggle() -> bool:
 def signal_cancel() -> bool:
     """Ask a running daemon to discard the current recording."""
     return _signal(signal.SIGUSR2)
+
+
+def signal_pause_toggle() -> bool:
+    """Flip a running daemon between enabled and disabled."""
+    return _signal(PAUSE_SIGNAL)
 
 
 def _signal(sig: int) -> bool:
