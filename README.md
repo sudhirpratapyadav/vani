@@ -86,6 +86,7 @@ is back. The tray shows the current verdict; so does `vani status`.
 | `vani tray` | tray indicator: state, server health, transcripts, settings |
 | `vani status` | daemon state, server connectivity, last transcript |
 | `vani service status\|start\|stop\|restart\|enable\|disable` | manage the background services |
+| `vani mic [list\|set N\|test]` | pick the microphone; `test` records 3 s and transcribes it |
 | `vani quit` | stop vani completely — daemon and tray |
 | `vani history [-n 20]` | past transcripts |
 | `vani doctor` | check every dependency, the config, and the server |
@@ -164,6 +165,7 @@ show` prints the effective values with the token masked.
 | `wake.enabled` | `true` | set false for hotkey-only (no vosk needed) |
 | `wake.phrases` | `["hey claude", "hi claude"]` | words must exist in the Vosk vocabulary |
 | `wake.model_dir` | `~/.local/share/vani/vosk-model-small-en-us-0.15` | model location |
+| `recording.device` | — | pinned microphone (`vani mic`); empty = system default |
 | `recording.silence_sec` | `3` | silence that ends a recording |
 | `recording.silence_warn_sec` | `1` | silence before the countdown appears |
 | `recording.max_sec` | `120` | hard limit on one recording |
@@ -205,6 +207,12 @@ them directly. Then:
   path to it is gone; `vani doctor` names which. The daemon re-checks every
   few minutes and posts a banner when it is back. See
   [Server side](#server-side) for bringing the GPU end up.
+- **Live text works but nothing is heard / clips are discarded** — the wrong
+  microphone is being recorded. `vani mic test` answers it in one command;
+  `vani mic set` pins the right one (tray → Settings → Microphone does the
+  same). A Bluetooth headset's mic only exists in its headset profile — vani
+  switches the profile automatically when that mic is selected, which also
+  means playback drops to call quality while the daemon holds the mic open.
 - **"(no speech detected)"** — listen to `~/.cache/vani/last.wav`: it is the
   same audio the server heard. A wired or built-in mic (Settings → Sound →
   Input) beats a Bluetooth headset for ASR by a wide margin.

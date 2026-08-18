@@ -119,6 +119,10 @@ def run() -> int:
         def _settings_menu(self) -> "Gtk.Menu":
             sub = Gtk.Menu()
 
+            mic = Gtk.MenuItem(label="Microphone")
+            mic.set_submenu(self._mic_menu())
+            sub.append(mic)
+
             login = Gtk.CheckMenuItem(label="Start on login")
             login.set_active(service.starts_on_login())
             # Connected after set_active, so building the menu never toggles.
@@ -141,6 +145,37 @@ def run() -> int:
             check.connect("activate", lambda *_: threading.Thread(
                 target=self.check_server, daemon=True).start())
             sub.append(check)
+            return sub
+
+        def _mic_menu(self) -> "Gtk.Menu":
+            """Radio list of inputs; selecting one runs `vani mic set`, which
+            owns the persistence, Bluetooth profile switch, and daemon restart."""
+            from .cli import mic_choices
+            from .config import load
+
+            sub = Gtk.Menu()
+            try:
+                current = load(required=False).recording.device
+            except Exception:
+                current = ""
+
+            def add(label: str, value: str, active: bool) -> None:
+                item = Gtk.CheckMenuItem(label=label)
+                item.set_draw_as_radio(True)
+                item.set_active(active)
+                # Connected after set_active, so building never triggers it.
+                item.connect("activate",
+                             lambda *_: self.run_vani("mic", "set", value))
+                sub.append(item)
+
+            add("System default", "default", not current)
+            try:
+                for name, label, bt in mic_choices():
+                    active = bool(current) and (current == name
+                                                or current.startswith(name))
+                    add(label, name, active)
+            except Exception:
+                pass  # no pactl: the default entry alone is still truthful
             return sub
 
         def _server_label(self) -> str:

@@ -64,6 +64,16 @@ def control(action: str) -> "tuple[bool, str]":
     return code == 0, out
 
 
+def restart_daemon() -> bool:
+    """Restart just the daemon — e.g. after a settings change. The unit way
+    when installed; SIGTERM (systemd Restart= does not revive a clean exit,
+    so only the unit path truly restarts) plus a fresh `vani start` is out of
+    scope for a hand-run daemon — the caller reports what happened instead."""
+    if units_installed() and unit_state(DAEMON_UNIT)[0] == "active":
+        return _systemctl("restart", DAEMON_UNIT)[0] == 0
+    return False
+
+
 def quit_all() -> "list[str]":
     """Stop vani completely — daemon and tray, however they were started.
 

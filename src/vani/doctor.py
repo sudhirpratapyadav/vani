@@ -37,6 +37,7 @@ def run(check_server: bool = True) -> int:
         pass
 
     checks += _binary_checks()
+    checks += _mic_check(cfg)
     checks += _session_checks(cfg)
     checks += _wake_checks(cfg)
     checks += _stream_checks(cfg)
@@ -96,6 +97,23 @@ def _binary_checks() -> list[Check]:
         checks.append(Check(name, OK if found else (FAIL if required else WARN),
                             found or f"not found — needed for {why}"))
     return checks
+
+
+def _mic_check(cfg: Config | None) -> list[Check]:
+    from . import audio
+
+    device = cfg.recording.device if cfg else ""
+    if not device:
+        return [Check("microphone", OK,
+                      f"system default ({audio.default_source()}) — pin one "
+                      "with `vani mic`")]
+    if audio.is_alsa_name(device) or audio._source_present(device):
+        return [Check("microphone", OK, device)]
+    if device.startswith("bluez_source."):
+        return [Check("microphone", WARN,
+                      f"{device} is off (headset in A2DP) — vani switches the "
+                      "profile when recording starts")]
+    return [Check("microphone", FAIL, f"{device} not found — `vani mic list`")]
 
 
 def _session_checks(cfg: Config | None) -> list[Check]:

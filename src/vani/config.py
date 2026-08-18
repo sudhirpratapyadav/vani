@@ -384,6 +384,43 @@ def _num(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else str(value)
 
 
+def set_key(section: str, key: str, value: Any, path: Path | None = None) -> Path:
+    """Update one key in the config file, leaving everything else untouched.
+
+    A settings UI must not round-trip through render(), which writes only the
+    starter subset and would silently drop any other key the user customised.
+    This edits the file as text: replace the key's line if present, insert it
+    under its section header otherwise, append the section if it is missing.
+    """
+    path = path or paths.config_file()
+    lines = path.read_text().splitlines() if path.exists() else []
+    new_line = f"{key} = {_toml(value)}"
+    out: list[str] = []
+    in_section = False
+    replaced = inserted = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            if in_section and not replaced and not inserted:
+                out.append(new_line)   # section ended without the key
+                inserted = True
+            in_section = stripped == f"[{section}]"
+        elif in_section and not replaced \
+                and stripped.split("=")[0].strip() == key:
+            line = new_line
+            replaced = True
+        out.append(line)
+    if in_section and not replaced and not inserted:
+        out.append(new_line)
+    if not replaced and not inserted and not in_section \
+            and f"[{section}]" not in (l.strip() for l in out):
+        out += ["", f"[{section}]", new_line]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out) + "\n")
+    path.chmod(0o600)
+    return path
+
+
 def write(cfg: Config, path: Path | None = None) -> Path:
     """Write the config with 600 permissions (it contains the token)."""
     path = path or paths.config_file()

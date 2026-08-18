@@ -71,6 +71,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="re-download if present")
     p.set_defaults(func=cmd_model)
 
+    p = sub.add_parser("mic", help="list, select, or test the microphone")
+    p.add_argument("action", nargs="?", default="list",
+                   choices=("list", "set", "test"))
+    p.add_argument("name", nargs="?",
+                   help="for set: a number from `vani mic list`, a source "
+                        "name, or 'default'")
+    p.set_defaults(func=cmd_mic)
+
     p = sub.add_parser("say", help="transcribe a WAV file and print the text")
     p.add_argument("file", help="16 kHz mono WAV")
     p.add_argument("--type", action="store_true",
@@ -237,6 +245,117 @@ def cmd_model(args: argparse.Namespace) -> int:
     except model.ModelError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    return 0
+
+
+def mic_choices() -> "list[tuple[str, str, tuple[str, str] | None]]":
+    """(persist_name, label, bt_switch) — bt_switch names a (card, profile)
+    that must be activated before the source exists. Shared with the tray."""
+    from . import audio
+
+    choices = [(name, desc, None) for name, desc in audio.list_sources()]
+    for card, profile, desc in audio.bluetooth_mic_candidates():
+        mac = card[len("bluez_card."):]
+        choices.append((f"bluez_source.{mac}", f"{desc} (headset mic, off)",
+                        (card, profile)))
+    return choices
+
+
+def cmd_mic(args: argparse.Namespace) -> int:
+    from . import audio, service
+
+    cfg = _load(args)
+    current = cfg.recording.device
+
+    if args.action == "list":
+        print(f"  current: {current or 'system default (%s)' % audio.default_source()}\n")
+        for i, (name, label, bt) in enumerate(mic_choices(), 1):
+            mark = "*" if name == current or (bt and current.startswith(name)) else " "
+            print(f"{mark} {i}. {label}\n       {name}")
+        print(f"\n  0. system default\n\nselect with: vani mic set <number>")
+        return 0
+
+    if args.action == "test":
+        return _mic_test(cfg)
+
+    # set
+    if not args.name:
+        print("usage: vani mic set <number|source-name|default>", file=sys.stderr)
+        return 2
+    choices = mic_choices()
+    target, bt = args.name, None
+    if target in ("0", "default"):
+        target = ""
+    elif target.isdigit():
+        idx = int(target) - 1
+        if not 0 <= idx < len(choices):
+            print(f"no microphone #{target} — see `vani mic list`", file=sys.stderr)
+            return 1
+        target, _label, bt = choices[idx]
+    else:
+        for name, _label, cand_bt in choices:
+            if name == target:
+                bt = cand_bt
+                break
+    if bt is not None:
+        # The mic only exists in the headset profile; switch, then find the
+        # real source name to persist (its suffix names the profile).
+        card, profile = bt
+        if not audio.ensure_source(target):
+            print(f"error: could not activate the mic profile on {card}",
+                  file=sys.stderr)
+            return 1
+        mac = card[len("bluez_card."):]
+        target = next((n for n, _d in audio.list_sources()
+                       if n.startswith(f"bluez_source.{mac}")), target)
+
+    config.set_key("recording", "device", target, args.config)
+    print(f"microphone: {target or 'system default'}")
+    if service.restart_daemon():
+        print("daemon restarted")
+    else:
+        print("restart the daemon to apply: vani service restart")
+    return 0
+
+
+def _mic_test(cfg: Config) -> int:
+    """Record three seconds from the configured mic and transcribe it —
+    one command that answers 'is the microphone actually working'."""
+    from . import audio
+    from .stream import LiveStream, StreamError
+
+    device = cfg.recording.device
+    print(f"recording 3s from {device or 'system default (%s)' % audio.default_source()}"
+          " — say something...")
+    mic = audio.Microphone(cfg.recording.sample_rate,
+                           int(0.2 * cfg.recording.sample_rate * audio.SAMPLE_WIDTH),
+                           device or None)
+    stream = LiveStream(cfg)
+    stream.start()
+    total = 0
+    peak_level = 0.0
+    mic.open()
+    try:
+        for chunk in mic.chunks():
+            stream.send(chunk)
+            peak_level = max(peak_level, audio.rms(chunk))
+            total += len(chunk)
+            if total >= 3 * cfg.recording.sample_rate * audio.SAMPLE_WIDTH:
+                break
+    finally:
+        mic.close()
+    if total == 0:
+        print("error: the microphone produced no audio at all", file=sys.stderr)
+        stream.abort()
+        return 1
+    print(f"peak level: {peak_level:.0f} (speech is usually well above 500)")
+    try:
+        text = stream.finish(cfg.server.timeout_sec)
+    except StreamError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"heard: {text}" if text else
+          "heard: (nothing — wrong mic, muted, or you were quiet)")
     return 0
 
 
