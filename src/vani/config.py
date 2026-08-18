@@ -62,6 +62,10 @@ class RecordingConfig:
     min_sec: float = 0.4
     #: Trailing silence left on the clip so words aren't clipped.
     keep_tail_sec: float = 0.4
+    #: arecord device to record from (`arecord -L` lists them). Empty = the
+    #: system default source — which can silently change, e.g. when a
+    #: Bluetooth headset flips between A2DP (no mic) and HFP profiles.
+    device: str = ""
     #: Capture rate; the API expects 16 kHz mono.
     sample_rate: int = 16000
     #: Speech is this many times louder than the tracked ambient noise floor.

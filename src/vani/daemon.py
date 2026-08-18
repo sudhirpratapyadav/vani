@@ -69,7 +69,10 @@ class Daemon:
 
     def handle_event(self, event: Event) -> None:
         if event.kind == "started":
-            log(f"recording started ({event.detail})")
+            # Naming the mic here, not just at finish: "wrong microphone" is
+            # invisible in every other line of the log.
+            log(f"recording started ({event.detail}) mic="
+                f"{self.cfg.recording.device or audio.default_source()}")
             state.set_status(state.RECORDING)
             self._start_live()
             self.notifier.show(
@@ -143,7 +146,11 @@ class Daemon:
 
         if not text:
             log("server returned no text")
-            self.notifier.show("(no speech detected)", 3000, replace=True)
+            # Include the mic: "no speech" with speech happening almost always
+            # means the wrong device is being recorded.
+            self.notifier.show("(no speech detected — mic: %s)"
+                               % (self.cfg.recording.device or audio.default_source()),
+                               5000, replace=True)
             state.set_status(state.IDLE)
             return
 
@@ -210,7 +217,8 @@ class Daemon:
                self.cfg.server.url,
                self.typist.backend))
 
-        mic = audio.Microphone(self.cfg.recording.sample_rate, self.chunk_bytes)
+        mic = audio.Microphone(self.cfg.recording.sample_rate, self.chunk_bytes,
+                               self.cfg.recording.device or None)
         while True:
             mic.open()
             try:

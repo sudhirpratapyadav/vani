@@ -48,11 +48,13 @@ def _start(cfg: Config) -> int:
     # -d stops at max_sec, so a forgotten push-to-talk cannot record all day.
     # Never 0, which arecord reads as "no limit".
     limit = max(1, round(cfg.recording.max_sec))
+    cmd = ["arecord", "-q", "-f", "S16_LE", "-r", str(cfg.recording.sample_rate),
+           "-c", "1", "-d", str(limit)]
+    if cfg.recording.device:
+        cmd += ["-D", cfg.recording.device]
     try:
-        proc = subprocess.Popen(
-            ["arecord", "-q", "-f", "S16_LE", "-r", str(cfg.recording.sample_rate),
-             "-c", "1", "-d", str(limit), str(wav)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd + [str(wav)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as exc:
         notifier.show(f"Cannot record: {exc}", 5000)
         return 1
