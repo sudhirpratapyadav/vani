@@ -3,23 +3,55 @@
 **Voice dictation for the Linux desktop.** Say the wake word or tap a key, talk,
 stop talking — the text is typed into whatever field has focus.
 
-Speech recognition runs on a remote GPU (Voxtral); vani is the local client:
-wake-word spotting, hotkey handling, recording, silence detection, and typing.
-Wake-word spotting happens entirely on your machine — audio only leaves it once
-a recording has actually started.
+Speech recognition runs on a hosted realtime ASR service; vani is the local
+client: wake-word spotting, hotkey handling, recording, silence detection, and
+typing. Wake-word spotting happens entirely on your machine — audio only
+leaves it once a recording has actually started.
+
+Two services are supported, chosen by `server.provider`:
+
+| Provider | Endpoint | Auth |
+|---|---|---|
+| **`deepgram`** (default) | `wss://api.deepgram.com/v1/listen` | API key, `Authorization: Token …` |
+| `voxtral` | an OpenAI-realtime-shaped vLLM server | optional Bearer token |
+
+`provider = "auto"` reads it off the URL, so pointing `server.url` at
+`api.deepgram.com` is enough.
 
 ```
 $ vani doctor
   ✓ config          ~/.config/vani/config.toml
-  ✓ server url      wss://ai-stream.lsquarelabs.com/v1/realtime
+  ✓ api token
+  ✓ provider        deepgram
+  ✓ server url      wss://api.deepgram.com/v1/listen
+  ✓ model           nova-3
   ✓ arecord         /usr/bin/arecord
   ✓ typing backend  xdotool
   ✓ wake model      ~/.local/share/vani/vosk-model-small-en-us-0.15
   ✓ websockets
   ✓ daemon          running (pid 40122)
   ✓ start on login  enabled
-  ✓ server          wss://ai-stream.lsquarelabs.com/v1/realtime
+  ✓ server          wss://api.deepgram.com/v1/listen
 ```
+
+### The API key
+
+Put it in `~/.config/vani/config.toml` (mode 600) — that is the only place the
+systemd-managed daemon will find it:
+
+```toml
+[server]
+provider = "deepgram"
+url = "wss://api.deepgram.com/v1/listen"
+model = "nova-3"
+token = "…"
+```
+
+`server.token_file` and `$DEEPGRAM_API_KEY` work too; the env var only reaches
+the daemon if you export it into the systemd user environment, so the config
+file is the reliable option. `vani doctor` verifies the key by calling
+Deepgram's project listing — a rejected key is caught there, not twenty
+seconds into your first recording.
 
 ## Install / uninstall
 
@@ -49,37 +81,72 @@ cp systemd/*.service ~/.config/systemd/user/
 systemctl --user enable --now vani-daemon.service vani-tray.service
 ```
 
-Requirements: Linux, Python 3.9+, X11 (see [Wayland](#wayland) below). The only
+Requirements: Linux, Python 3.8+, X11 (see [Wayland](#wayland) below). The only
 Python dependency is `websockets` (the transcription transport) — recording is
 an `arecord` pipe, health checks are `urllib`. `vosk` is optional and only
 powers the wake word.
 
 ## Using it
 
-Three ways to start a recording; all of them stop the same way — pause for
-three seconds and the clip is sent.
+Ways to start a recording:
 
 | | |
 |---|---|
-| **Wake word** | say *"hey claude"* (configurable) |
-| **Media key** | press the key the daemon watches (keycode 171 = `XF86AudioNext`) |
-| **Push-to-talk** | bind `vani toggle` to any shortcut in your desktop settings |
+| **Wake word** | say *"hey claude"* (configurable) — hands-free |
+| **Tap the key** | tap the watched key (keycode 171 = `XF86AudioNext`) — hands-free |
+| **Hold the key** | hold it and talk; **release sends immediately** |
+| **Shortcut** | bind `vani toggle` to any shortcut in your desktop settings |
 
-While it counts down, speaking again cancels the send and recording continues.
-Pressing the key during a recording sends it immediately.
+One key, two gestures. A **tap** starts a hands-free session that ends when you
+pause for three seconds — speaking again during the countdown cancels the send
+and keeps recording, and tapping again sends at once. A **hold** (longer than
+`hotkey.hold_sec`) is push-to-talk: it records while held and commits the
+moment you let go, with no silence wait at all — the fastest path from thought
+to text. Holding the key *during* a hands-free recording cancels it instead.
 
-While you speak, the audio streams to the realtime endpoint and the text
-appears live in a small translucent overlay at the bottom of the screen, a
-word or two behind your voice. The overlay grows with the text up to a cap
-and then scrolls; its header shows the state ("● listening", "⏸ typing in
-2s — speak to continue"), so the countdown never covers the words. Nothing
-is typed until the recording ends — then the final transcript goes into the
-focused field in one piece, so there is never anything to un-type. Without
-the tray process (which draws the overlay), live text falls back to the
-notification.
+### The pill
 
-`vani cancel` — or the tray's "Cancel (discard)" while recording — throws
-the recording away instead of typing it.
+Everything about a live session appears in one place: a small pill that grows
+out of the idle dot the instant recording starts.
+
+```
+ Off        nothing on screen (the tray icon shows a muted mic)
+ Asleep     a dim dot — wake word armed
+ Blocked    an amber dot — the server is unreachable, so a key press
+            would be refused; you know before you speak, not after
+ Listening  a red dot and a live waveform; a ring around the dot means
+            push-to-talk, so releasing the key will send
+ Countdown  the dot becomes a draining ring — the seconds until it types
+ Finishing  the waveform freezes and a shimmer sweeps the pill; past four
+            seconds it says "taking longer than usual" with a counter
+ Typed      "✓ typed → Firefox" — the window that actually received it
+ Error      the pill turns red, says why in one sentence, and offers ↻ retry
+```
+
+The live draft grows in a card attached to the pill (`ui.captions`: `always`,
+`hover`, or `off`). Nothing is typed until the recording ends — the final
+transcript goes into the focused field in one piece, so there is never
+anything to un-type. The pill docks to any of six positions and follows the
+monitor holding the focused window.
+
+Every state also has a sound — a pop when the wake word lands, a rising tick
+when the mic goes hot, a falling tick when the text is typed, a low buzz for
+trouble — because dictation is an eyes-busy activity. Turn them off with
+`ui.sounds = false`.
+
+Desktop notifications are the fallback for when the tray process is not
+running, not a second channel alongside the pill.
+
+`vani cancel` — the tray's "Cancel", the ✕ on the pill, or holding the key
+while recording — throws the recording away instead of typing it.
+
+### Nothing said is ever lost
+
+The last clip is always kept, including one you cancelled or one whose
+transcription failed, and `vani retry` (or the pill's ↻ button) sends it
+again. If the stream dies mid-sentence, the words it had already returned are
+kept too — flagged `[not typed]` in `vani history`. If the text cannot be
+typed into the focused window, it is copied to the clipboard instead.
 
 `vani disable` (tray: "Disable dictation") closes the microphone entirely:
 no wake-word spotting, no key, nothing captured rather than
@@ -98,6 +165,7 @@ is back. The tray shows the current verdict; so does `vani status`.
 | `vani start` | run the daemon in the foreground (systemd normally does this) |
 | `vani toggle` | start/stop a recording — the daemon's if it's running, else standalone |
 | `vani cancel` | discard the current recording; nothing is typed |
+| `vani retry` | re-send the last clip — after a failure, or a cancel you regret |
 | `vani disable` / `enable` | close/reopen the microphone — disabled means nothing is captured at all |
 | `vani tray` | the UI process: tray indicator + live-caption overlay |
 | `vani status` | daemon state, server connectivity, last transcript |
@@ -173,9 +241,10 @@ show` prints the effective values with the token masked.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `server.url` | `wss://ai-stream.lsquarelabs.com/v1/realtime` | realtime ASR WebSocket |
-| `server.token` | — | optional Bearer token; or `server.token_file`, or `$VANI_TOKEN` |
-| `server.model` | `mistralai/Voxtral-Mini-4B-Realtime-2602` | model named in `session.update` |
+| `server.provider` | `auto` | `auto`, `deepgram`, or `voxtral`; `auto` reads it off the URL |
+| `server.url` | `wss://api.deepgram.com/v1/listen` | realtime ASR WebSocket |
+| `server.token` | — | API key; or `server.token_file`, `$VANI_TOKEN`, `$DEEPGRAM_API_KEY` |
+| `server.model` | `nova-3` | Deepgram `?model=`, or the name in Voxtral's `session.update` |
 | `server.timeout_sec` | `20` | give up when the server goes quiet this long after a recording ends (activity resets it) |
 | `server.health_check_min` | `5` | minutes between connectivity checks (0 = off) |
 | `wake.enabled` | `true` | set false for hotkey-only (no vosk needed) |
@@ -188,16 +257,24 @@ show` prints the effective values with the token masked.
 | `recording.speech_factor` | `3.5` | how far above the noise floor counts as speech |
 | `recording.min_speech_level` | `350` | absolute bar for speech; lower for a quiet mic |
 | `hotkey.enabled` / `.keycode` | `true` / `171` | the watched key |
-| `ui.enabled` | `true` | the live-caption overlay |
-| `ui.width` / `.max_height` | `520` / `260` | overlay size in px; height grows to the cap, then scrolls |
-| `ui.opacity` | `0.88` | overlay background opacity (0.2–1.0) |
+| `hotkey.hold_sec` | `0.35` | hold this long and the press becomes push-to-talk |
+| `hotkey.cancel_hold_sec` | `0.6` | holding this long during a hands-free recording cancels it |
+| `ui.enabled` | `true` | the pill and its caption card |
+| `ui.position` | `bottom-center` | pill dock: `bottom`/`top` × `left`/`center`/`right` |
+| `ui.captions` | `always` | live draft card: `always`, `hover` (only under the pointer), `off` |
+| `ui.idle_dot` | `true` | the dim dot while asleep; off = nothing on screen when idle |
+| `ui.sounds` | `true` | earcons for start, typed, and trouble |
+| `ui.width` / `.max_height` | `520` / `260` | caption card size in px; height grows to the cap, then scrolls |
+| `ui.opacity` | `0.88` | pill and card background opacity (0.2–1.0) |
 | `output.typer` | `auto` | `xdotool`, `ydotool`, `clipboard`, `stdout` |
-| `output.notify` / `.history` | `true` | desktop notifications / transcript log |
+| `output.notify` / `.history` | `true` | fallback notifications / transcript log |
+| `output.save_last_wav` | `true` | keep the last clip so `vani retry` can resend it |
 
 Unknown or mistyped keys are rejected at startup rather than silently ignored —
-except the keys the batch-era app wrote itself (`server.endpoint`,
-`recording.auto_gain`, an `https://` server URL), which are migrated in place
-so an upgrade never strands the config.
+except the keys older versions wrote themselves (`server.endpoint`,
+`recording.auto_gain`, `recording.transport`, the interim `[stream]` section,
+an `https://` server URL), which are migrated in place so an upgrade never
+strands the config.
 
 Find your key's keycode with:
 

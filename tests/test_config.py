@@ -159,11 +159,42 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(cfg.server.timeout_sec, Config().server.timeout_sec)
         self.assertEqual(cfg.recording.silence_sec, 2.0)       # preserved
 
+    def test_pre_v2_transport_key_is_absorbed(self):
+        """v1's own `config init` wrote recording.transport; v2 is
+        streaming-only, so the key is dropped rather than rejected."""
+        cfg = config.load(self.write(
+            "[recording]\ntransport = \"stream\"\nsilence_sec = 2\n"))
+        self.assertEqual(cfg.recording.silence_sec, 2.0)
+        self.assertFalse(hasattr(cfg.recording, "transport"))
+
+    def test_a_genuine_typo_is_still_an_error(self):
+        """Absorbing old keys must not turn every misspelling into a shrug."""
+        with self.assertRaises(ConfigError):
+            config.load(self.write("[recording]\nsilense_sec = 2\n"))
+
     def test_interim_stream_section_is_folded_into_server(self):
         cfg = config.load(self.write(
             '[stream]\nurl = "wss://x.test/v1/realtime"\ndone_timeout_sec = 9\n'))
         self.assertEqual(cfg.server.url, "wss://x.test/v1/realtime")
         self.assertEqual(cfg.server.timeout_sec, 9.0)
+
+
+class CaptionModeTest(unittest.TestCase):
+    """`ui.captions` gained a third mode; all three must round-trip."""
+
+    def write(self, text: str) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config.toml"
+        tmp.write_text(text)
+        return tmp
+
+    def test_every_documented_mode_loads(self):
+        for mode in config.UI_CAPTIONS:
+            cfg = config.load(self.write('[ui]\ncaptions = "%s"\n' % mode))
+            self.assertEqual(cfg.ui.captions, mode)
+
+    def test_an_unknown_mode_is_rejected(self):
+        with self.assertRaises(ConfigError):
+            config.load(self.write('[ui]\ncaptions = "sometimes"\n'))
 
 
 class DumpTest(unittest.TestCase):

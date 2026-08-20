@@ -26,18 +26,33 @@ LEGACY_BATCH_URL = "https://ai.lsquarelabs.com"
 UI_POSITIONS = ("bottom-center", "bottom-left", "bottom-right",
                 "top-center", "top-left", "top-right")
 
+#: Live-caption display modes (see UiConfig.captions).
+UI_CAPTIONS = ("always", "hover", "off")
+
+#: Transcription back ends vani can speak to (see stream.py).
+PROVIDERS = ("auto", "voxtral", "deepgram")
+
+#: Deepgram's realtime endpoint, and the host that identifies it.
+DEEPGRAM_HOST = "api.deepgram.com"
+DEEPGRAM_URL = "wss://api.deepgram.com/v1/listen"
+
 
 @dataclass
 class ServerConfig:
-    #: Realtime ASR WebSocket endpoint (OpenAI-realtime shaped).
-    url: str = "wss://ai-stream.lsquarelabs.com/v1/realtime"
+    #: Which realtime protocol the endpoint speaks. "auto" reads it off the
+    #: URL — api.deepgram.com means Deepgram, anything else is the
+    #: OpenAI-realtime-shaped Voxtral server — so the URL alone is usually
+    #: enough. Set it explicitly to override that guess.
+    provider: str = "auto"
+    #: Realtime ASR WebSocket endpoint.
+    url: str = "wss://api.deepgram.com/v1/listen"
     #: Optional bearer token, sent as an Authorization header when set.
     #: Prefer `token_file` or the VANI_TOKEN env var on shared machines.
     token: str = ""
     #: Optional path to a file holding the token (first line).
     token_file: str = ""
-    #: Model name sent in session.update.
-    model: str = "mistralai/Voxtral-Mini-4B-Realtime-2602"
+    #: Model name: sent in session.update for Voxtral, as ?model= for Deepgram.
+    model: str = "nova-3"
     #: After a recording ends, give up once the server has been silent this
     #: long. Counted from its last delta, not from the stop — a long
     #: utterance keeps draining as long as words keep arriving.
@@ -117,7 +132,9 @@ class UiConfig:
     #: Where the pill docks: bottom-center, bottom-left, bottom-right,
     #: top-center, top-left, top-right.
     position: str = "bottom-center"
-    #: Live captions while recording: "always" or "off" (pill only).
+    #: Live captions while recording: "always" shows the draft card the whole
+    #: time, "hover" only while the pointer is over the pill (calm by default,
+    #: evidence on demand), "off" never.
     captions: str = "always"
     #: While idle with the wake word armed, show a tiny dim dot (amber when
     #: the server is unreachable). Off = nothing on screen while idle.
@@ -155,8 +172,24 @@ class Config:
     # -- derived values ----------------------------------------------------
 
     @property
+    def provider(self) -> str:
+        """Which realtime protocol this config actually speaks."""
+        if self.server.provider != "auto":
+            return self.server.provider
+        host = self.server.url.partition("://")[2].split("/", 1)[0]
+        return "deepgram" if host == DEEPGRAM_HOST else "voxtral"
+
+    @property
     def health_url(self) -> str:
-        """The realtime host's plain-HTTP health endpoint (vLLM's GET /health)."""
+        """A plain-HTTP endpoint that answers "is this service up?".
+
+        vLLM answers GET /health on the same host that serves the socket.
+        Deepgram has no such endpoint, so the cheapest equivalent is a
+        listing call — it also proves the key is accepted, which /health
+        never did.
+        """
+        if self.provider == "deepgram":
+            return "https://api.deepgram.com/v1/projects"
         scheme, _, rest = self.server.url.partition("://")
         host = rest.split("/", 1)[0]
         return ("https" if scheme == "wss" else "http") + f"://{host}/health"
@@ -168,8 +201,15 @@ class Config:
         return paths.model_dir()
 
     def resolved_token(self) -> str:
-        """The token from the env var, the token file, or the config, in that order."""
+        """The token from the env var, the token file, or the config, in that order.
+
+        DEEPGRAM_API_KEY is honoured too when that is the provider — it is the
+        name the vendor's own tooling uses, so a machine that already exports
+        it needs nothing in the config file.
+        """
         env = os.environ.get("VANI_TOKEN")
+        if not env and self.provider == "deepgram":
+            env = os.environ.get("DEEPGRAM_API_KEY")
         if env:
             return env.strip()
         if self.server.token_file:
@@ -227,6 +267,10 @@ def _migrate_legacy(data: dict) -> None:
         # Post-hoc gain made sense for a batch upload; a live stream sends the
         # audio as captured, so the knob no longer exists.
         recording.pop("auto_gain", None)
+        # v2 is streaming-only, so there is no transport to choose any more.
+        # The old `vani config init` wrote this key itself, so rejecting it
+        # would strand every pre-v2 user at "unknown key recording.transport".
+        recording.pop("transport", None)
     server = data.get("server")
     if isinstance(server, dict):
         server.pop("endpoint", None)  # batch-only concept
@@ -318,8 +362,10 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("ui.opacity must be between 0.2 and 1.0")
     if cfg.ui.position not in UI_POSITIONS:
         raise ConfigError("ui.position must be one of: " + ", ".join(UI_POSITIONS))
-    if cfg.ui.captions not in ("always", "off"):
-        raise ConfigError("ui.captions must be \"always\" or \"off\"")
+    if cfg.server.provider not in PROVIDERS:
+        raise ConfigError("server.provider must be one of: " + ", ".join(PROVIDERS))
+    if cfg.ui.captions not in UI_CAPTIONS:
+        raise ConfigError("ui.captions must be one of: " + ", ".join(UI_CAPTIONS))
     if cfg.hotkey.backend not in ("auto", "xinput", "evdev"):
         raise ConfigError("hotkey.backend must be auto, xinput, or evdev")
     if cfg.hotkey.hold_sec <= 0 or cfg.hotkey.cancel_hold_sec <= 0:
@@ -343,9 +389,12 @@ TEMPLATE = """\
 # This file may hold an API token; keep it mode 600.
 
 [server]
+provider = "{provider}"   # auto | deepgram | voxtral — auto reads it off the url
 url = "{url}"
+model = "{model}"
 token = "{token}"
 # token_file = "~/.config/vani/token"   # alternative to the line above
+# Deepgram also accepts the key from $DEEPGRAM_API_KEY.
 timeout_sec = {timeout_sec}     # wait for the final transcript after a recording
 
 [wake]
@@ -379,6 +428,8 @@ def render(cfg: Config) -> str:
     """
     phrases = ", ".join('"%s"' % p.replace('"', '\\"') for p in cfg.wake.phrases)
     return TEMPLATE.format(
+        provider=cfg.server.provider,
+        model=cfg.server.model,
         url=cfg.server.url,
         token=cfg.server.token,
         timeout_sec=_num(cfg.server.timeout_sec),

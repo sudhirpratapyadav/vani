@@ -35,9 +35,9 @@ import time
 from . import config as config_mod
 from . import daemon as daemon_mod
 from . import paths, service, state
-from .config import UI_POSITIONS, load as load_config
+from .config import UI_CAPTIONS, UI_POSITIONS, load as load_config
 from .events import EventClient
-from .output import session_type
+from .output import focused_center, session_type
 
 MAX_ITEM_CHARS = 60
 RECENT_ITEMS = 5
@@ -60,6 +60,9 @@ COLORS = {
     "ok": (0.30, 0.83, 0.49),
     "warn": (0.96, 0.71, 0.33),
 }
+#: Grow/shrink tween. Short enough to feel instant, long enough to read as
+#: motion in peripheral vision — which is the whole point of the gesture.
+SPRING_SEC = 0.17
 PILL_BG = (0.055, 0.063, 0.086)
 PILL_H = 38
 DOT_WIN = 18
@@ -124,11 +127,40 @@ def run() -> int:
         layout.set_text(text, -1)
         return layout
 
+    def ease_out_back(t: float) -> float:
+        """Overshoot slightly, then settle — the spring in "spring animation"."""
+        t -= 1.0
+        return t * t * (2.70158 * t + 1.70158) + 1.0
+
     def measure_text(text, size=10.5) -> int:
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)
         cr = cairo.Context(surface)
         layout = text_layout(cr, text, size)
         return layout.get_pixel_size()[0]
+
+    #: Cached monitor geometry, so positioning never shells out mid-animation.
+    _monitor_geo = [None]
+
+    def active_monitor(refresh: bool = False):
+        """Geometry of the monitor the user is actually working on.
+
+        Resolved from the focused window (X11) and cached: `_position` runs on
+        every animation frame, and an xdotool call per frame would cost more
+        than the animation it is placing. Refreshed when a session begins,
+        which is the only moment the answer can matter.
+        """
+        display = Gdk.Display.get_default()
+        if display is None:
+            return None
+        if refresh or _monitor_geo[0] is None:
+            monitor = None
+            center = focused_center()
+            if center is not None:
+                monitor = display.get_monitor_at_point(*center)
+            if monitor is None:
+                monitor = display.get_primary_monitor() or display.get_monitor(0)
+            _monitor_geo[0] = monitor.get_geometry() if monitor else None
+        return _monitor_geo[0]
 
     # ------------------------------------------------------------------
     # The pill
@@ -151,9 +183,17 @@ def run() -> int:
             if visual is not None:
                 w.set_visual(visual)
             w.set_app_paintable(True)
-            w.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+            w.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
+                         | Gdk.EventMask.ENTER_NOTIFY_MASK
+                         | Gdk.EventMask.LEAVE_NOTIFY_MASK)
             w.connect("draw", self._draw)
             w.connect("button-press-event", self._click)
+            w.connect("enter-notify-event", self._crossing, True)
+            w.connect("leave-notify-event", self._crossing, False)
+            #: Set by the tray; called with True/False as the pointer
+            #: enters and leaves, to drive `ui.captions = "hover"`.
+            self.on_hover = lambda _inside: None
+            self.hovered = False
 
             #: Render state: hidden | dot | listening | countdown | finishing
             #: | transient (typed/copied/cancelled/error carried in _transient)
@@ -163,7 +203,12 @@ def run() -> int:
             self.countdown = 0.0
             self.countdown_at = 0.0
             self.slow = False
+            self.finish_at = 0.0
             self.ptt = False
+            self._spring_from = (0, 0)
+            self._spring_to_size = (0, 0)
+            self._spring_at = 0.0
+            self._springing = False
             self._transient: "dict | None" = None
             self._transient_seq = 0
             self._anim_running = False
@@ -178,9 +223,11 @@ def run() -> int:
                 return  # the transient finishes its say first
             if mode == self.mode and mode in ("dot", "hidden"):
                 return  # the poll fallback re-asserts idle twice a second
-            self.mode = mode
+            previous, self.mode = self.mode, mode
             if mode == "listening":
                 self.ptt = False
+            if mode == "finishing" and previous != "finishing":
+                self.finish_at = time.monotonic()
             self._apply()
 
         def show_transient(self, kind: str, text: str, seconds: float,
@@ -226,7 +273,9 @@ def run() -> int:
                 return (196, PILL_H)
             if self.mode == "finishing":
                 if self.slow:
-                    return (200 + measure_text("taking longer than usual…"),
+                    # Sized for the widest counter it will ever show, so the
+                    # pill does not twitch wider on every passing second.
+                    return (200 + measure_text("taking longer than usual… 00s"),
                             PILL_H)
                 return (168, PILL_H)
             if self.mode == "transient" and self._transient is not None:
@@ -243,32 +292,73 @@ def run() -> int:
                 if self.visible:
                     self.visible = False
                     self.win.hide()
+                self._springing = False
                 self._stop_anim()
                 return
             size = self._wanted_size()
-            if size != self._size:
-                self._size = size
-                self.win.resize(*size)
-            self._position(size)
             if not self.visible:
+                # Grow out of the dot rather than appearing at full width —
+                # motion is what the eye catches at the edge of vision.
+                self._size = (DOT_WIN, DOT_WIN)
+                self.win.resize(*self._size)
+                self._position(self._size)
                 self.visible = True
                 self.win.show_all()
+            if size != self._size:
+                self._spring_to(size)
+            else:
                 self._position(size)
             self.win.queue_draw()
             if self.mode in ("countdown", "finishing"):
                 self._start_anim()
-            else:
+            elif not self._springing:
                 self._stop_anim()
+
+        # -- the spring -------------------------------------------------
+
+        def _spring_to(self, size) -> None:
+            self._spring_from = self._size
+            self._spring_to_size = size
+            self._spring_at = time.monotonic()
+            if not self._springing:
+                self._springing = True
+                GLib.timeout_add(16, self._spring_tick)
+
+        def _spring_tick(self) -> bool:
+            if not self.visible:
+                self._springing = False
+                return False
+            fraction = (time.monotonic() - self._spring_at) / SPRING_SEC
+            target = self._spring_to_size
+            if fraction >= 1.0:
+                self._springing = False
+                self._set_size(target)
+                if self.mode not in ("countdown", "finishing"):
+                    self._stop_anim()
+                return False
+            eased = ease_out_back(fraction)
+            self._set_size((
+                max(DOT_WIN, int(self._spring_from[0]
+                                 + (target[0] - self._spring_from[0]) * eased)),
+                max(DOT_WIN, int(self._spring_from[1]
+                                 + (target[1] - self._spring_from[1]) * eased)),
+            ))
+            return True
+
+        def _set_size(self, size) -> None:
+            if size != self._size:
+                self._size = size
+                self.win.resize(*size)
+            self._position(size)
+            self.win.queue_draw()
 
         def _dot_visible(self) -> bool:
             return cfg.ui.idle_dot
 
         def _position(self, size) -> None:
-            display = Gdk.Display.get_default()
-            monitor = display.get_primary_monitor() or display.get_monitor(0)
-            if monitor is None:
+            geo = active_monitor()
+            if geo is None:
                 return
-            geo = monitor.get_geometry()
             w, h = size
             pos = cfg.ui.position
             margin_v, margin_h = 72, 24
@@ -337,6 +427,14 @@ def run() -> int:
                     set_color(cr, "rec")
                     cr.arc(x + 5, h / 2, 5, 0, 2 * math.pi)
                     cr.fill()
+                    if self.ptt:
+                        # Push-to-talk: a ring around the dot, the way a held
+                        # key looks. Tells the user releasing will send now,
+                        # rather than the three-second silence wait.
+                        set_color(cr, "rec", 0.45)
+                        cr.set_line_width(1.6)
+                        cr.arc(x + 5, h / 2, 8.5, 0, 2 * math.pi)
+                        cr.stroke()
                     x += 20
                 else:
                     self._draw_ring(cr, x + 10, h / 2)
@@ -351,7 +449,9 @@ def run() -> int:
                 wave_w = 100
                 self._draw_wave(cr, x, wave_w, h, frozen=True)
                 if self.slow:
-                    layout = text_layout(cr, "taking longer than usual…")
+                    waited = int(time.monotonic() - self.finish_at)
+                    layout = text_layout(
+                        cr, "taking longer than usual… %ds" % max(waited, 0))
                     set_color(cr, "muted")
                     cr.move_to(x + wave_w + 10,
                                (h - layout.get_pixel_size()[1]) / 2)
@@ -453,6 +553,11 @@ def run() -> int:
                 return True
             return True  # the center is dead during recording — by design
 
+        def _crossing(self, _w, _event, inside: bool) -> bool:
+            self.hovered = inside
+            self.on_hover(inside)
+            return False
+
         def _act(self, name: str) -> None:
             if name == "cancel":
                 run_vani("cancel")
@@ -517,8 +622,9 @@ def run() -> int:
             self.visible = False
             self._shown = None
 
-        def update(self, text: str) -> None:
-            if cfg.ui.captions != "always" or not text:
+        def update(self, text: str, hovering: bool = False) -> None:
+            mode = cfg.ui.captions
+            if not text or mode == "off" or (mode == "hover" and not hovering):
                 self.hide()
                 return
             if text != self._shown:
@@ -549,11 +655,9 @@ def run() -> int:
             return False
 
         def _position(self) -> None:
-            display = Gdk.Display.get_default()
-            monitor = display.get_primary_monitor() or display.get_monitor(0)
-            if monitor is None:
+            geo = active_monitor()
+            if geo is None:
                 return
-            geo = monitor.get_geometry()
             w, h = self.win.get_size()
             pos = cfg.ui.position
             margin_h = 24
@@ -624,6 +728,8 @@ def run() -> int:
 
             self.pill = Pill() if cfg.ui.enabled else None
             self.card = CaptionCard() if cfg.ui.enabled else None
+            if self.pill is not None:
+                self.pill.on_hover = self._on_hover
             self.coarse = ""       # the menu/icon granularity
             self.server = ("unpolled", "")
             self.connected = False
@@ -654,8 +760,8 @@ def run() -> int:
                                     float(ev.get("threshold", 1)))
             elif kind == "live":
                 self._live_text = ev.get("text", "")
-                if self.card is not None and self.coarse in ("rec", "busy"):
-                    self.card.update(self._live_text)
+                if self.coarse in ("rec", "busy"):
+                    self._refresh_card()
             elif kind == "result":
                 self._on_result(ev)
             elif kind == "error":
@@ -664,14 +770,19 @@ def run() -> int:
                 if self.pill is not None:
                     self.pill.show_transient("error", "✗ " + message, seconds,
                                              retry=bool(ev.get("retry")))
-                if self.card is not None:
-                    self.card.hide()
+                # Words the stream had already returned are kept, not wiped:
+                # the card holds them so they can be read or copied.
+                self._show_partial(ev.get("partial", ""))
             elif kind == "discarded":
-                if self.pill is not None and ev.get("reason") == "cancelled":
+                cancelled = ev.get("reason") == "cancelled"
+                partial = ev.get("partial", "")
+                if self.pill is not None and cancelled:
                     self.pill.show_transient(
-                        "cancelled", "✕ cancelled — audio kept", CANCELLED_SEC)
-                if self.card is not None:
-                    self.card.hide()
+                        "cancelled",
+                        "✕ cancelled — audio kept" + (" and text saved"
+                                                      if partial else ""),
+                        CANCELLED_SEC)
+                self._show_partial(partial)
             elif kind == "server":
                 ok = ev.get("ok")
                 self.server = (ok, ev.get("detail", ""))
@@ -702,11 +813,42 @@ def run() -> int:
                 self.pill.show_transient(kind, label, TYPED_SEC)
             if self.card is not None:
                 # Linger on the final transcript so it can be read, then go.
-                self.card.update(ev.get("text", "") or self._live_text)
+                # Worth a look even in hover mode: this is the delivered text.
+                self.card.update(ev.get("text", "") or self._live_text,
+                                 hovering=True)
                 self._card_linger_seq += 1
                 seq = self._card_linger_seq
                 GLib.timeout_add(int(LINGER_SEC * 1000),
                                  self._card_linger_end, seq)
+
+        def _show_partial(self, partial: str) -> None:
+            """Hold a salvaged draft on the card, then let it go."""
+            if self.card is None:
+                return
+            if not partial:
+                self.card.hide()
+                return
+            self.card.update(partial, hovering=True)
+            self._card_linger_seq += 1
+            seq = self._card_linger_seq
+            GLib.timeout_add(int(ERROR_SEC * 1000), self._card_linger_end, seq)
+
+        def _refresh_card(self, text: "str | None" = None) -> None:
+            """Show the draft according to `ui.captions` and the pointer."""
+            if self.card is None:
+                return
+            hovering = self.pill is not None and self.pill.hovered
+            self.card.update(self._live_text if text is None else text,
+                             hovering=hovering)
+
+        def _on_hover(self, inside: bool) -> None:
+            """Pointer crossed the pill — `hover` captions live and die here."""
+            if cfg.ui.captions != "hover":
+                return
+            if inside and self._live_text and self.coarse in ("rec", "busy"):
+                self._refresh_card()
+            elif not inside:
+                self.card.hide()
 
         def _card_linger_end(self, seq: int) -> bool:
             if seq == self._card_linger_seq and self.coarse not in ("rec",):
@@ -725,6 +867,10 @@ def run() -> int:
             coarse = mapping.get(st, "asleep")
             if coarse == "asleep" and self.server[0] is False:
                 coarse = "blocked"
+            if st == state.RECORDING and self.coarse != "rec":
+                # A session is starting: this is the one moment worth asking
+                # which screen the user is working on, before the pill grows.
+                active_monitor(refresh=True)
             if self.pill is not None:
                 if st == state.RECORDING:
                     self.pill.show_mode("listening")
@@ -740,7 +886,7 @@ def run() -> int:
                     self.pill.show_mode("dot")
             if self.card is not None:
                 if st in (state.RECORDING, state.SILENCE):
-                    self.card.update(self._live_text)
+                    self._refresh_card()
                 elif st == state.DISABLED:
                     self.card.hide()
             if st == state.IDLE:
@@ -856,9 +1002,8 @@ def run() -> int:
             pos.set_submenu(self._position_menu())
             sub.append(pos)
 
-            captions = Gtk.CheckMenuItem(label="Live captions")
-            captions.set_active(cfg.ui.captions == "always")
-            captions.connect("toggled", self._toggle_captions)
+            captions = Gtk.MenuItem(label="Live captions")
+            captions.set_submenu(self._captions_menu())
             sub.append(captions)
 
             sound = Gtk.CheckMenuItem(label="Sounds")
@@ -915,11 +1060,29 @@ def run() -> int:
                 self.pill._apply()
             self._rebuild()
 
-        def _toggle_captions(self, item) -> None:
-            cfg.ui.captions = "always" if item.get_active() else "off"
-            self._save("captions", cfg.ui.captions)
-            if self.card is not None and cfg.ui.captions == "off":
-                self.card.hide()
+        def _captions_menu(self) -> "Gtk.Menu":
+            sub = Gtk.Menu()
+            labels = {"always": "Always", "hover": "On hover", "off": "Off"}
+            for mode in UI_CAPTIONS:
+                item = Gtk.CheckMenuItem(label=labels[mode])
+                item.set_draw_as_radio(True)
+                item.set_active(cfg.ui.captions == mode)
+                item.connect("activate", self._set_captions, mode)
+                sub.append(item)
+            return sub
+
+        def _set_captions(self, _item, mode: str) -> None:
+            if cfg.ui.captions == mode:
+                return
+            cfg.ui.captions = mode
+            self._save("captions", mode)
+            if self.card is not None:
+                if mode == "off" or (mode == "hover"
+                                     and not (self.pill and self.pill.hovered)):
+                    self.card.hide()
+                elif self.coarse in ("rec", "busy"):
+                    self._refresh_card()
+            self._rebuild()
 
         def _toggle_sounds(self, item) -> None:
             cfg.ui.sounds = item.get_active()

@@ -26,13 +26,24 @@ class ServerError(Exception):
 
 
 def check_health(cfg: Config, timeout: float = 10.0) -> None:
-    """Raise ServerError unless the ASR server is reachable and healthy."""
-    req = urllib.request.Request(
-        cfg.health_url, headers={"User-Agent": USER_AGENT})
+    """Raise ServerError unless the ASR service is reachable and usable."""
+    headers = {"User-Agent": USER_AGENT}
+    if cfg.provider == "deepgram":
+        # Deepgram has no anonymous health endpoint; the listing call doubles
+        # as a key check, so a wrong key is caught here rather than 20 s into
+        # the first recording.
+        token = cfg.resolved_token()
+        if not token:
+            raise ServerError("no Deepgram API key (set server.token or "
+                              "$DEEPGRAM_API_KEY)")
+        headers["Authorization"] = "Token " + token
+    req = urllib.request.Request(cfg.health_url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout):
             return  # any 2xx means healthy; the body is empty
     except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise ServerError("API key rejected (HTTP %d)" % exc.code) from None
         if exc.code in (502, 503, 504):
             raise ServerError("server is down (tunnel answered "
                               f"HTTP {exc.code})") from None

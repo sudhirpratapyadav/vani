@@ -215,6 +215,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     current, countdown = state.read_status()
     pid = daemon_module.is_running()
+    ok, detail = state.read_server()
     label = {
         state.IDLE: "asleep — waiting for the wake word or key",
         state.RECORDING: "listening",
@@ -222,9 +223,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         state.SILENCE: f"typing in {countdown:.1f}s",
         state.DISABLED: "off (microphone closed)",
     }[current]
+    # Same collapse the tray makes: while idle with a dead server the honest
+    # answer is "blocked", not "asleep" — a key press would be refused.
+    if current == state.IDLE and ok is False:
+        label = "blocked — server unreachable, dictation will not start"
     print(f"state:  {label}")
     print(f"daemon: {'running (pid %d)' % pid if pid else 'not running'}")
-    ok, detail = state.read_server()
     if ok is None:
         print("server: unknown (no health check has run)")
     else:

@@ -83,8 +83,24 @@ class CliTest(TempHome):
     def test_status_without_a_daemon(self):
         code, out = self.run_cli("status")
         self.assertEqual(code, 0)
-        self.assertIn("idle", out)
+        self.assertIn("asleep", out)
         self.assertIn("not running", out)
+
+    def test_status_reports_blocked_when_the_server_is_down(self):
+        """Idle plus a dead server is "blocked" — a key press would refuse,
+        so "asleep" would be a lie."""
+        state.set_server(False, "connection refused")
+        code, out = self.run_cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("blocked", out)
+        self.assertNotIn("asleep", out)
+
+    def test_status_says_asleep_while_the_server_is_healthy(self):
+        state.set_server(True, "")
+        code, out = self.run_cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("asleep", out)
+        self.assertNotIn("blocked", out)
 
     def test_history_empty_then_populated(self):
         code, out = self.run_cli("history")

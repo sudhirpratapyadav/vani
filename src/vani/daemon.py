@@ -52,6 +52,9 @@ PAUSE_SIGNAL = signal.SIGRTMIN + 1
 #: A finish that is still waiting on the server after this long says so
 #: instead of looking hung.
 SLOW_FINISH_SEC = 4.0
+#: Prefix for history entries that were transcribed but never typed (a failed
+#: or cancelled recording), so they read as a salvage rather than a delivery.
+HISTORY_UNTYPED = "[not typed] "
 
 
 def log(msg: str) -> None:
@@ -176,13 +179,15 @@ class Daemon:
             if self._live is not None:
                 self._live.abort()
                 self._live = None
+            partial_text = self._live_text
             state.set_live("")
             self._set_status(state.IDLE)
             self.sounds.play("trouble")
             cancelled = event.detail == "cancelled"
+            partial = self._salvage(partial_text)
             self._publish("discarded",
                           reason="cancelled" if cancelled else "nothing captured",
-                          seconds=round(event.seconds, 1))
+                          seconds=round(event.seconds, 1), partial=partial)
             if not self._ui_attached():
                 self.notifier.show("Cancelled — nothing typed" if cancelled
                                    else "(nothing captured, cancelled)",
@@ -204,6 +209,20 @@ class Daemon:
     def _may_start(self) -> bool:
         """The session's start gate: don't record into a known-dead server."""
         return self._server_ok is not False
+
+    def _salvage(self, text: str) -> str:
+        """Keep words that were transcribed but never typed.
+
+        A failed or cancelled recording still leaves the audio in last.wav,
+        but the stream had usually already returned most of the sentence —
+        throwing that away is the one thing principle 6 forbids. It goes to
+        history flagged, so `vani history` and the tray's recent list can
+        offer it without it looking like something that was actually typed.
+        """
+        text = (text or "").strip()
+        if text and self.cfg.output.history:
+            state.append_history(HISTORY_UNTYPED + text)
+        return text
 
     def _keep_discarded_audio(self, pcm: bytes) -> None:
         """Cancelled/unusable audio still lands in last.wav: `vani retry`
@@ -261,12 +280,15 @@ class Daemon:
                 slow.cancel()
                 log(f"transcription failed: {exc}")
                 self.sounds.play("trouble")
+                partial = self._salvage(self._live_text)
                 self._publish("error",
-                              message=f"Transcription failed: {exc}", retry=True)
+                              message=f"Transcription failed: {exc}", retry=True,
+                              partial=partial)
                 if not self._ui_attached():
                     self.notifier.show(
                         f"✗ Transcription failed: {exc}\n"
-                        "The audio is saved — `vani retry` sends it again.",
+                        + ("Kept: " + partial[:80] + "\n" if partial else "")
+                        + "The audio is saved — `vani retry` sends it again.",
                         8000, replace=True)
                 state.set_live("")
                 self._set_status(state.IDLE)
@@ -305,11 +327,14 @@ class Daemon:
         except OutputError as exc:
             log(f"could not type text: {exc}")
             self.sounds.play("trouble")
-            self._publish("error",
-                          message=f"Transcribed but not typed: {exc}", retry=True)
+            # Typing failed, but the words exist — put them somewhere the user
+            # can reach rather than leaving history as the only copy.
+            rescued = self.typist.copy(text)
+            message = f"Transcribed but not typed: {exc}" + (
+                " — copied to the clipboard" if rescued else "")
+            self._publish("error", message=message, retry=True, partial=text)
             if not self._ui_attached():
-                self.notifier.show(f"Transcribed but not typed: {exc}", 6000,
-                                   replace=True)
+                self.notifier.show(message, 6000, replace=True)
             backend = None
         if self.cfg.output.history:
             state.append_history(text)
@@ -353,16 +378,22 @@ class Daemon:
             return
         was, self._server_ok = self._server_ok, ok
         self._publish("server", ok=ok, detail=detail)
+        # The verdict already went out as a `server` event, which the pill
+        # renders as the amber idle dot. Banner only when nobody is subscribed
+        # — otherwise the same news arrives twice, which is the exact
+        # double-reporting the redesign set out to remove.
+        attached = self._ui_attached()
         if ok:
             log(f"server online: {self.cfg.health_url}")
-            if was is False:
+            if was is False and not attached:
                 self.health_notifier.show("✓ Transcription server is back online",
                                           4000, replace=True)
         else:
             log(f"server unreachable: {detail}")
-            self.health_notifier.show(
-                "✗ Transcription server unreachable — dictation will not work.\n"
-                + detail, 10000, replace=True)
+            if not attached:
+                self.health_notifier.show(
+                    "✗ Transcription server unreachable — dictation will not work.\n"
+                    + detail, 10000, replace=True)
 
     # -- main loop ---------------------------------------------------------
 

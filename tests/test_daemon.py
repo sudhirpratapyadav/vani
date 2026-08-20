@@ -29,6 +29,46 @@ class FakeMic:
         return iter(self._chunks)
 
 
+class SalvageTest(unittest.TestCase):
+    """A failed or cancelled recording must not take the words with it."""
+
+    def setUp(self) -> None:
+        self.home = Path(tempfile.mkdtemp())
+        self.env = mock.patch.dict(os.environ, {
+            "HOME": str(self.home),
+            "XDG_CONFIG_HOME": str(self.home / ".config"),
+            "XDG_CACHE_HOME": str(self.home / ".cache"),
+            "XDG_DATA_HOME": str(self.home / ".local/share"),
+            "XDG_RUNTIME_DIR": str(self.home / "run"),
+        })
+        self.env.start()
+        paths.ensure_dirs()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+
+    def test_a_partial_transcript_reaches_history_flagged(self):
+        d = daemon.Daemon(Config(), dry_run=True)
+        self.assertEqual(d._salvage("  hello world  "), "hello world")
+        entries = state.read_history()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0][1],
+                         daemon.HISTORY_UNTYPED + "hello world")
+
+    def test_nothing_is_written_for_an_empty_partial(self):
+        d = daemon.Daemon(Config(), dry_run=True)
+        self.assertEqual(d._salvage("   "), "")
+        self.assertEqual(state.read_history(), [])
+
+    def test_history_disabled_is_respected(self):
+        cfg = Config()
+        cfg.output.history = False
+        d = daemon.Daemon(cfg, dry_run=True)
+        self.assertEqual(d._salvage("kept for the caller"),
+                         "kept for the caller")
+        self.assertEqual(state.read_history(), [])
+
+
 class SignalTest(unittest.TestCase):
     def setUp(self) -> None:
         self.saved = {s: signal.getsignal(s)

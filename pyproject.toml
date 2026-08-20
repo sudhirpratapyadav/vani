@@ -7,7 +7,7 @@ name = "vani"
 version = "2.0.0"
 description = "Voice dictation for the Linux desktop — speak, and the text is typed"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.8"
 license = { file = "LICENSE" }
 keywords = ["dictation", "speech-to-text", "voice", "linux", "vosk", "voxtral"]
 classifiers = [

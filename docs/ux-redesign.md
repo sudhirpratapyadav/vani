@@ -459,6 +459,28 @@ or wrap the socket in phase 3; the event vocabulary is the durable part.)
 
 ### 6.2 Phased roadmap
 
+> **Status (2026-08-20).** Phases 0–2 are built, with three deliberate
+> departures from the text below and one item dropped:
+>
+> - Items 2 and 3 skipped their interim hacks — the `_ui_live` pidfile and the
+>   `error:<msg>` status string never existed, because the phase-1 event
+>   socket (§6.1) landed first and `_ui_attached()` reads it directly.
+> - Item 1 synthesises its WAVs at runtime (`sounds.py`) and plays them with
+>   `paplay`/`aplay`, rather than shipping OGG assets for `canberra-gtk-play`.
+> - Item 5 (**double-press = cancel**) was **dropped in favour of
+>   hold-to-cancel** (`hotkey.cancel_hold_sec`). A 400 ms double-press cannot
+>   coexist with `debounce_sec = 0.5`, which the watcher applies before the
+>   daemon sees the second press, and it would compete with item 11's
+>   hold-to-talk for the same key. One key now carries tap / hold / hold-while-
+>   recording, which is as much as one key can carry unambiguously.
+> - Item 8's drag-to-dock is not built; the six anchors are menu-selected.
+>   Follow-the-focused-monitor is built.
+> - Item 14 names the target window on success and rescues untypable text to
+>   the clipboard. It does **not** detect "no focusable field" before typing —
+>   X11 exposes no reliable way to ask, so the failure is handled after the
+>   fact rather than predicted.
+
+
 **Phase 0 — this week, no architecture (each item is small):**
 1. **Earcons**: rising tick on record-start, falling tick on typed, low buzz
    on error, soft pop on wake-ack. `paplay` on bundled OGGs (or

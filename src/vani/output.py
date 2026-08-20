@@ -43,6 +43,36 @@ def focused_window() -> str:
     return name[:60] if proc.returncode == 0 else ""
 
 
+def focused_center() -> "tuple[int, int] | None":
+    """Screen coordinates of the middle of the focused window.
+
+    The pill follows the work, not the hardware: on a multi-head desk the
+    instrument belongs on the monitor the user is typing into. X11 only —
+    Wayland gives no way to ask, so the caller falls back to the primary
+    monitor. None when there is no answer.
+    """
+    if not shutil.which("xdotool") or not os.environ.get("DISPLAY"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["xdotool", "getactivewindow", "getwindowgeometry", "--shell"],
+            capture_output=True, text=True, timeout=1)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    values = {}
+    for line in proc.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if value.strip().lstrip("-").isdigit():
+            values[key.strip()] = int(value)
+    try:
+        return (values["X"] + values["WIDTH"] // 2,
+                values["Y"] + values["HEIGHT"] // 2)
+    except KeyError:
+        return None
+
+
 def detect_typer() -> str:
     """Pick the best available backend for this session."""
     if session_type() == "wayland" and shutil.which("ydotool"):
@@ -89,6 +119,23 @@ class Typist:
             raise OutputError(f"unknown output backend {self.backend!r}")
         handler(text)
         return self.backend
+
+    def copy(self, text: str) -> bool:
+        """Put `text` on the clipboard, best effort.
+
+        The rescue path for a failed typing attempt: the words are already
+        transcribed, and losing them because the target window would not take
+        keystrokes is the failure principle 6 exists to prevent. Never raises
+        — it runs where something has gone wrong already.
+        """
+        cmd = clipboard_command()
+        if cmd is None or not text:
+            return False
+        try:
+            subprocess.run(cmd, input=text, text=True, timeout=10, check=True)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     def _run(self, cmd: list[str]) -> None:
         try:

@@ -81,7 +81,9 @@ def _config_checks() -> list[Check]:
         checks.append(Check("api token", OK, "" if token else "not set (optional)"))
     except ConfigError as exc:
         checks.append(Check("api token", FAIL, str(exc)))
+    checks.append(Check("provider", OK, cfg.provider))
     checks.append(Check("server url", OK, cfg.server.url))
+    checks.append(Check("model", OK, cfg.server.model))
     return checks
 
 
