@@ -140,6 +140,19 @@ running, not a second channel alongside the pill.
 `vani cancel` — the tray's "Cancel", the ✕ on the pill, or holding the key
 while recording — throws the recording away instead of typing it.
 
+### Sending, not just typing
+
+`output.submit = true` (tray: **Settings → Press Enter after typing**) presses
+Enter once the transcript is in, so a chat box, a shell prompt, or a search
+field acts on what you said instead of just holding it — dictate a prompt and
+it runs. The pill says "✓ sent → Firefox" rather than "✓ typed" when it did.
+
+It is off by default, because in a text editor it inserts a newline you did
+not ask for. The Enter is a separate keypress, not a newline in the typed
+string — a chat box treats those differently. It needs a key-pressing backend:
+there is nothing to submit on the clipboard, and `vani doctor` shows which
+backend you have. The tray toggle takes effect immediately; no restart.
+
 ### False wakeups
 
 Vosk decodes against a grammar of just the wake phrases, so anything that
@@ -281,6 +294,7 @@ show` prints the effective values with the token masked.
 | `ui.width` / `.max_height` | `520` / `260` | caption card size in px; height grows to the cap, then scrolls |
 | `ui.opacity` | `0.88` | pill and card background opacity (0.2–1.0) |
 | `output.typer` | `auto` | `xdotool`, `ydotool`, `clipboard`, `stdout` |
+| `output.submit` | `false` | press Enter after the text, so prompts and chat boxes act on it |
 | `output.notify` / `.history` | `true` | fallback notifications / transcript log |
 | `output.save_last_wav` | `true` | keep the last clip so `vani retry` can resend it |
 

@@ -155,6 +155,11 @@ class OutputConfig:
     typer: str = "auto"
     #: Per-keystroke delay in milliseconds when typing.
     type_delay_ms: int = 2
+    #: Press Enter after the text, so a chat box, prompt, or search field
+    #: acts on it instead of just holding it. Off by default: in an editor
+    #: this inserts a newline you did not ask for. Needs a key-pressing
+    #: backend — there is nothing to submit on the clipboard.
+    submit: bool = False
     #: Show desktop notifications.
     notify: bool = True
     #: Append transcripts to the history log.
@@ -421,6 +426,7 @@ keycode = {keycode}          # XF86AudioNext; find yours with:
 
 [output]
 typer = "{typer}"       # auto | xdotool | ydotool | clipboard | stdout
+submit = {submit}      # also press Enter, so prompts and chat boxes act on it
 notify = {notify}
 history = {history}
 """
@@ -448,6 +454,7 @@ def render(cfg: Config) -> str:
         hotkey_enabled=_bool(cfg.hotkey.enabled),
         keycode=cfg.hotkey.keycode,
         typer=cfg.output.typer,
+        submit=_bool(cfg.output.submit),
         notify=_bool(cfg.output.notify),
         history=_bool(cfg.output.history),
     )

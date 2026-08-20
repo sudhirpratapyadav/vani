@@ -808,7 +808,8 @@ def run() -> int:
                     label = "📋 copied to clipboard"
                     kind = "copied"
                 else:
-                    label = "✓ typed" + (f" → {target}" if target else "")
+                    verb = "sent" if ev.get("submitted") else "typed"
+                    label = f"✓ {verb}" + (f" → {target}" if target else "")
                     kind = "typed"
                 self.pill.show_transient(kind, label, TYPED_SEC)
             if self.card is not None:
@@ -1006,6 +1007,11 @@ def run() -> int:
             captions.set_submenu(self._captions_menu())
             sub.append(captions)
 
+            submit = Gtk.CheckMenuItem(label="Press Enter after typing")
+            submit.set_active(cfg.output.submit)
+            submit.connect("toggled", self._toggle_submit)
+            sub.append(submit)
+
             sound = Gtk.CheckMenuItem(label="Sounds")
             sound.set_active(cfg.ui.sounds)
             sound.connect("toggled", self._toggle_sounds)
@@ -1083,6 +1089,14 @@ def run() -> int:
                 elif self.coarse in ("rec", "busy"):
                     self._refresh_card()
             self._rebuild()
+
+        def _toggle_submit(self, item) -> None:
+            cfg.output.submit = item.get_active()
+            try:
+                config_mod.set_key("output", "submit", cfg.output.submit)
+            except OSError:
+                pass
+            daemon_mod.signal_reload()  # the daemon owns the typist
 
         def _toggle_sounds(self, item) -> None:
             cfg.ui.sounds = item.get_active()

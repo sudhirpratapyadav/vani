@@ -70,7 +70,8 @@ class Daemon:
         #: live transcript (both update their own message in place).
         self.health_notifier = NullNotifier() if dry_run else Notifier(cfg.output.notify)
         self.sounds = sounds.Player(cfg.ui.sounds and not dry_run)
-        self.typist = Typist(cfg.output.typer, cfg.output.type_delay_ms)
+        self.typist = Typist(cfg.output.typer, cfg.output.type_delay_ms,
+                             cfg.output.submit)
         self.spotter = wake.NullSpotter() if dry_run else self._build_spotter()
         self.session = Session(cfg, self.spotter, self.handle_clip,
                                self.handle_event, self.handle_chunk,
@@ -343,7 +344,7 @@ class Daemon:
             return
         self.sounds.play("done")
         self._publish("result", ok=True, text=text, backend=backend,
-                      target=target)
+                      target=target, submitted=self.typist.submits)
         if not self._ui_attached():
             if backend == "clipboard":
                 self.notifier.show("📋 copied: " + text[:80], 4000, replace=True)
@@ -547,14 +548,17 @@ class Daemon:
             self.paused = not self.paused
 
         def on_reload(_sig, _frm):
-            # SIGHUP: re-read the sound switch, the one setting the tray
-            # toggles live. Everything else still needs a restart.
+            # SIGHUP: re-read the settings the tray toggles live — the sound
+            # switch and the Enter-after-typing switch. Everything else still
+            # needs a restart.
             try:
                 fresh = load_config(required=False)
             except Exception:
                 return
             self.cfg.ui.sounds = fresh.ui.sounds
             self.sounds = sounds.Player(fresh.ui.sounds and not self.dry_run)
+            self.cfg.output.submit = fresh.output.submit
+            self.typist.submit = fresh.output.submit
 
         def on_term(_sig, _frm):
             log("shutting down")

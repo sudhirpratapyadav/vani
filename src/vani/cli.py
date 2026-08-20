@@ -184,7 +184,8 @@ def cmd_retry(args: argparse.Namespace) -> int:
         return 1
     from .daemon import deliver
 
-    deliver(text, Typist(cfg.output.typer, cfg.output.type_delay_ms),
+    deliver(text, Typist(cfg.output.typer, cfg.output.type_delay_ms,
+                   cfg.output.submit),
             Notifier(cfg.output.notify), cfg)
     player.play("done")
     return 0
@@ -483,7 +484,8 @@ def cmd_say(args: argparse.Namespace) -> int:
     if args.type:
         from .daemon import deliver
 
-        deliver(text, Typist(cfg.output.typer, cfg.output.type_delay_ms),
+        deliver(text, Typist(cfg.output.typer, cfg.output.type_delay_ms,
+                   cfg.output.submit),
                 NullNotifier(), cfg)
     return 0
 

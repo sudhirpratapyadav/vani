@@ -118,7 +118,8 @@ def _stop_and_send(cfg: Config) -> int:
         notifier.show("(no speech detected)", 3000, replace=True)
         return 0
 
-    daemon.deliver(text, Typist(cfg.output.typer, cfg.output.type_delay_ms),
+    daemon.deliver(text, Typist(cfg.output.typer, cfg.output.type_delay_ms,
+                   cfg.output.submit),
                    notifier, cfg)
     player.play("done")
     state.set_status(state.IDLE)

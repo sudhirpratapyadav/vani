@@ -197,6 +197,22 @@ class CaptionModeTest(unittest.TestCase):
             config.load(self.write('[ui]\ncaptions = "sometimes"\n'))
 
 
+class SubmitTest(unittest.TestCase):
+    """Enter-after-typing: off unless asked for, and only where it works."""
+
+    def write(self, text: str) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config.toml"
+        tmp.write_text(text)
+        return tmp
+
+    def test_it_is_off_by_default(self):
+        self.assertFalse(Config().output.submit)
+
+    def test_it_round_trips(self):
+        cfg = config.load(self.write("[output]\nsubmit = true\n"))
+        self.assertTrue(cfg.output.submit)
+
+
 class DumpTest(unittest.TestCase):
     """`vani config show` has to report what the daemon will really use."""
 

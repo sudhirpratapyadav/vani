@@ -101,9 +101,20 @@ def clipboard_command() -> list[str] | None:
 class Typist:
     """Types text into the focused field using the configured backend."""
 
-    def __init__(self, backend: str = "auto", delay_ms: int = 2):
+    def __init__(self, backend: str = "auto", delay_ms: int = 2,
+                 submit: bool = False):
         self.backend = detect_typer() if backend == "auto" else backend
         self.delay_ms = delay_ms
+        self.submit = submit
+
+    @property
+    def submits(self) -> bool:
+        """Will delivered text actually be submitted?
+
+        Only a backend that presses keys can; pasting to the clipboard or
+        printing to stdout has nothing to press Enter in.
+        """
+        return self.submit and self.backend in ("xdotool", "ydotool")
 
     def deliver(self, text: str) -> str:
         """Send `text` to the desktop; returns the backend that handled it."""
@@ -118,6 +129,10 @@ class Typist:
         if handler is None:
             raise OutputError(f"unknown output backend {self.backend!r}")
         handler(text)
+        if self.submits:
+            # Separate from the text: xdotool type would enter a literal
+            # newline, which a chat box treats as a line break, not a send.
+            self._press_enter()
         return self.backend
 
     def copy(self, text: str) -> bool:
@@ -153,6 +168,12 @@ class Typist:
 
     def _ydotool(self, text: str) -> None:
         self._run(["ydotool", "type", "--key-delay", str(self.delay_ms), "--", text])
+
+    def _press_enter(self) -> None:
+        if self.backend == "ydotool":
+            self._run(["ydotool", "key", "28:1", "28:0"])   # 28 = KEY_ENTER
+        else:
+            self._run(["xdotool", "key", "--clearmodifiers", "Return"])
 
     def _clipboard(self, text: str) -> None:
         cmd = clipboard_command()
