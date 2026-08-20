@@ -14,7 +14,7 @@ import signal
 import subprocess
 import time
 
-from . import audio, daemon, paths, state
+from . import audio, daemon, paths, sounds, state
 from .config import Config
 from .notify import Notifier
 from .output import Typist
@@ -60,6 +60,7 @@ def _start(cfg: Config) -> int:
         return 1
     state.write_pidfile(paths.toggle_pidfile(), proc.pid)
     state.set_status(state.RECORDING)
+    sounds.Player(cfg.ui.sounds).play("start")
     notifier.show("● Recording — press the key again to send", 60000)
     return 0
 
@@ -99,20 +100,26 @@ def _stop_and_send(cfg: Config) -> int:
     chunk_bytes = int(0.2 * cfg.recording.sample_rate * audio.SAMPLE_WIDTH)
     for i in range(0, len(pcm), chunk_bytes):
         stream.send(pcm[i:i + chunk_bytes])
+    player = sounds.Player(cfg.ui.sounds)
     try:
         text = stream.finish(cfg.server.timeout_sec
                              + audio.duration(pcm, cfg.recording.sample_rate))
     except StreamError as exc:
         state.set_status(state.IDLE)
-        notifier.show(f"✗ Transcription failed: {exc}", 8000, replace=True)
+        player.play("trouble")
+        notifier.show(f"✗ Transcription failed: {exc}\n"
+                      "The audio is saved — `vani retry` sends it again.",
+                      8000, replace=True)
         return 1
 
     if not text:
         state.set_status(state.IDLE)
+        player.play("trouble")
         notifier.show("(no speech detected)", 3000, replace=True)
         return 0
 
     daemon.deliver(text, Typist(cfg.output.typer, cfg.output.type_delay_ms),
                    notifier, cfg)
+    player.play("done")
     state.set_status(state.IDLE)
     return 0

@@ -38,6 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("cancel", help="discard the current recording (nothing is typed)")
     p.set_defaults(func=cmd_cancel)
 
+    p = sub.add_parser("retry",
+                       help="re-send the last recording — after a failed "
+                            "transcription or a mistaken cancel")
+    p.set_defaults(func=cmd_retry)
+
     p = sub.add_parser("disable",
                        help="close the microphone — no wake word, no key, "
                             "nothing captured (daemon keeps running)")
@@ -137,6 +142,54 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_retry(args: argparse.Namespace) -> int:
+    """Re-stream ~/.cache/vani/last.wav and type the result.
+
+    Every recording lands there — including cancelled and failed ones — so
+    this is the "nothing you said is ever lost" recovery path. Focus the
+    field you want first; the text types wherever the caret is."""
+    from . import audio, sounds
+    from .notify import Notifier
+    from .output import Typist
+    from .stream import LiveStream, StreamError
+
+    cfg = _load(args)
+    wav = paths.last_wav()
+    if not wav.exists():
+        print(f"nothing to retry — no recording at {wav}", file=sys.stderr)
+        return 1
+    try:
+        pcm = audio.read_wav(str(wav), cfg.recording.sample_rate)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    player = sounds.Player(cfg.ui.sounds)
+    print(f"re-sending {audio.duration(pcm, cfg.recording.sample_rate):.1f}s "
+          "of audio...")
+    stream = LiveStream(cfg)
+    stream.start()
+    chunk_bytes = int(0.2 * cfg.recording.sample_rate * audio.SAMPLE_WIDTH)
+    for i in range(0, len(pcm), chunk_bytes):
+        stream.send(pcm[i:i + chunk_bytes])
+    try:
+        text = stream.finish(cfg.server.timeout_sec
+                             + audio.duration(pcm, cfg.recording.sample_rate))
+    except StreamError as exc:
+        player.play("trouble")
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not text:
+        player.play("trouble")
+        print("(no speech detected)", file=sys.stderr)
+        return 1
+    from .daemon import deliver
+
+    deliver(text, Typist(cfg.output.typer, cfg.output.type_delay_ms),
+            Notifier(cfg.output.notify), cfg)
+    player.play("done")
+    return 0
+
+
 def _set_enabled(want: bool) -> int:
     from . import daemon as daemon_module
 
@@ -163,11 +216,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     current, countdown = state.read_status()
     pid = daemon_module.is_running()
     label = {
-        state.IDLE: "idle",
-        state.RECORDING: "recording",
-        state.TRANSCRIBING: "transcribing",
+        state.IDLE: "asleep — waiting for the wake word or key",
+        state.RECORDING: "listening",
+        state.TRANSCRIBING: "finishing",
         state.SILENCE: f"typing in {countdown:.1f}s",
-        state.DISABLED: "disabled (microphone closed)",
+        state.DISABLED: "off (microphone closed)",
     }[current]
     print(f"state:  {label}")
     print(f"daemon: {'running (pid %d)' % pid if pid else 'not running'}")

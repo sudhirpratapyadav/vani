@@ -83,6 +83,16 @@ def live_file() -> Path:
     return runtime_dir() / "live"
 
 
+def events_socket() -> Path:
+    """Unix socket where the daemon publishes UI events (newline-JSON)."""
+    return runtime_dir() / "events.sock"
+
+
+def sounds_dir() -> Path:
+    """Generated earcon WAVs; rebuilt whenever the generation changes."""
+    return cache_dir() / "sounds"
+
+
 def toggle_pidfile() -> Path:
     return runtime_dir() / "toggle-arecord.pid"
 

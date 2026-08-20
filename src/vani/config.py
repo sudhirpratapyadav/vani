@@ -22,6 +22,10 @@ class ConfigError(Exception):
 #: The batch API this app used before v2; recognised only to migrate old configs.
 LEGACY_BATCH_URL = "https://ai.lsquarelabs.com"
 
+#: Docking anchors the pill understands (see tray.py).
+UI_POSITIONS = ("bottom-center", "bottom-left", "bottom-right",
+                "top-center", "top-left", "top-right")
+
 
 @dataclass
 class ServerConfig:
@@ -79,28 +83,48 @@ class RecordingConfig:
 
 @dataclass
 class HotkeyConfig:
-    #: Watch a physical key via X raw input events.
+    #: Watch a physical key via raw input events.
     enabled: bool = True
     #: 171 = XF86AudioNext, the F9 key without Fn on many laptops.
     #: Find yours with: xinput test-xi2 --root | grep -A2 RawKeyPress
+    #: (an X keycode; the evdev backend subtracts 8 internally).
     keycode: int = 171
-    #: Ignore repeats within this window.
+    #: Ignore a new press this soon after the previous one.
     debounce_sec: float = 0.5
+    #: How the key is watched: auto picks evdev on Wayland (needs membership
+    #: in the `input` group) and xinput on X11.
+    backend: str = "auto"
+    #: Holding the key at least this long makes the press push-to-talk:
+    #: recording runs while held and is sent the moment the key is released.
+    hold_sec: float = 0.35
+    #: Holding the key this long *during* a hands-free recording cancels it.
+    cancel_hold_sec: float = 0.6
 
 
 @dataclass
 class UiConfig:
-    """The live-caption overlay, drawn by the tray process while recording."""
+    """The pill instrument and caption card, drawn by the tray process."""
 
-    #: Show the overlay at all. Without it (or without the tray process),
-    #: live text falls back to the notification.
+    #: Show the pill at all. Without it (or without the tray process),
+    #: session feedback falls back to notifications.
     enabled: bool = True
-    #: Overlay width in pixels; text wraps inside it.
+    #: Caption card width in pixels; text wraps inside it.
     width: int = 520
-    #: The overlay grows with the text up to this height, then scrolls.
+    #: The caption card grows with the text up to this height, then scrolls.
     max_height: int = 260
-    #: Background opacity, 0.2 (glassy) to 1.0 (solid).
+    #: Pill and card background opacity, 0.2 (glassy) to 1.0 (solid).
     opacity: float = 0.88
+    #: Where the pill docks: bottom-center, bottom-left, bottom-right,
+    #: top-center, top-left, top-right.
+    position: str = "bottom-center"
+    #: Live captions while recording: "always" or "off" (pill only).
+    captions: str = "always"
+    #: While idle with the wake word armed, show a tiny dim dot (amber when
+    #: the server is unreachable). Off = nothing on screen while idle.
+    idle_dot: bool = True
+    #: Earcons: rising tick on start, falling tick on typed, low buzz on
+    #: trouble, soft pop on wake-word acknowledge. Played by the daemon.
+    sounds: bool = True
 
 
 @dataclass
@@ -292,6 +316,14 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("ui.width and ui.max_height must be positive")
     if not 0.2 <= cfg.ui.opacity <= 1.0:
         raise ConfigError("ui.opacity must be between 0.2 and 1.0")
+    if cfg.ui.position not in UI_POSITIONS:
+        raise ConfigError("ui.position must be one of: " + ", ".join(UI_POSITIONS))
+    if cfg.ui.captions not in ("always", "off"):
+        raise ConfigError("ui.captions must be \"always\" or \"off\"")
+    if cfg.hotkey.backend not in ("auto", "xinput", "evdev"):
+        raise ConfigError("hotkey.backend must be auto, xinput, or evdev")
+    if cfg.hotkey.hold_sec <= 0 or cfg.hotkey.cancel_hold_sec <= 0:
+        raise ConfigError("hotkey.hold_sec and cancel_hold_sec must be positive")
 
 
 def _apply_env(cfg: Config) -> Config:

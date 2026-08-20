@@ -27,6 +27,22 @@ def session_type() -> str:
     return "unknown"
 
 
+def focused_window() -> str:
+    """Name of the window about to receive the text, for the "✓ typed →
+    Firefox" confirmation — it catches wrong-window accidents at a glance.
+    Best-effort: X11 only (Wayland offers no way to ask), empty on failure."""
+    if not shutil.which("xdotool") or not os.environ.get("DISPLAY"):
+        return ""
+    try:
+        proc = subprocess.run(
+            ["xdotool", "getactivewindow", "getwindowname"],
+            capture_output=True, text=True, timeout=1)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    name = proc.stdout.strip()
+    return name[:60] if proc.returncode == 0 else ""
+
+
 def detect_typer() -> str:
     """Pick the best available backend for this session."""
     if session_type() == "wayland" and shutil.which("ydotool"):

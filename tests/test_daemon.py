@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import signal
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -102,7 +103,7 @@ class LiveClipTest(unittest.TestCase):
     def test_a_finished_stream_delivers_its_text(self):
         d = self.make()
         d._live = FakeLive("typed live")
-        with mock.patch.object(daemon, "deliver") as deliver:
+        with mock.patch.object(d, "_deliver") as deliver:
             d.handle_clip(SILENT_CHUNK)
         deliver.assert_called_once()
         self.assertEqual(deliver.call_args[0][0], "typed live")
@@ -111,11 +112,11 @@ class LiveClipTest(unittest.TestCase):
     def test_a_dead_stream_tells_the_user_and_rechecks_the_server(self):
         d = self.make()
         d._live = FakeLive(text=None)
-        with mock.patch.object(daemon, "deliver") as deliver:
+        with mock.patch.object(d, "_deliver") as deliver:
             d.handle_clip(SILENT_CHUNK)
         deliver.assert_not_called()  # nothing must be typed on failure
-        self.assertIn("✗ Transcription failed: scripted failure",
-                      d.notifier.messages)
+        self.assertTrue(any(m.startswith("✗ Transcription failed: scripted failure")
+                            for m in d.notifier.messages))
         # A failed recording wakes the health monitor for a fresh verdict.
         self.assertTrue(d._health_wake.is_set())
 
@@ -140,20 +141,21 @@ class LiveClipTest(unittest.TestCase):
         self.assertTrue(d._pump(FakeMic([SILENT_CHUNK])))  # mic restart
         self.assertFalse(d.session.recording)
 
-    def test_live_notifications_pause_while_the_overlay_is_alive(self):
+    def test_live_notifications_pause_while_a_ui_is_subscribed(self):
         d = self.make()
-        state.write_pidfile(paths.tray_pidfile())  # this process: alive
-        d.session.on_hotkey()          # emits "started" -> checks the pidfile
-        self.assertTrue(d._ui_live)
+        d.bus = mock.Mock(has_subscribers=True)  # a pill is watching
+        d.session.on_hotkey()
         before = len(d.notifier.messages)
         d.on_live_text("hello overlay")
         self.assertEqual(len(d.notifier.messages), before)  # no banner
-        self.assertEqual(state.read_live(), "hello overlay")  # file instead
+        self.assertEqual(state.read_live(), "hello overlay")  # file too
+        # ...and the event went out for the pill to draw.
+        d.bus.publish.assert_any_call("live", text="hello overlay")
 
-    def test_live_notifications_return_without_the_overlay(self):
+    def test_live_notifications_return_without_a_subscriber(self):
         d = self.make()
         d.session.on_hotkey()
-        self.assertFalse(d._ui_live)
+        self.assertFalse(d._ui_attached())  # no bus at all in tests
         d.on_live_text("hello notification")
         self.assertIn("● hello notification", d.notifier.messages)
 

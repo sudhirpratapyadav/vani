@@ -38,7 +38,7 @@ SPEECH_PEAK_DECAY = 0.995
 class Event:
     """Something the state machine did; the daemon logs these, tests assert on them."""
 
-    kind: str        # started | countdown | resumed | finished | discarded
+    kind: str        # started | countdown | resumed | finished | discarded | blocked
     detail: str = ""
     seconds: float = 0.0
 
@@ -51,6 +51,8 @@ class Session:
         on_clip: Callable[[bytes], None],
         on_event: Callable[[Event], None] = lambda e: None,
         on_chunk: Callable[[bytes], None] = lambda c: None,
+        can_start: Callable[[], bool] = lambda: True,
+        on_discard_audio: Callable[[bytes], None] = lambda pcm: None,
     ):
         self.cfg = cfg
         self.spotter = spotter
@@ -59,6 +61,18 @@ class Session:
         #: Called with every chunk that enters the buffer, in order, so a live
         #: consumer sees exactly the audio the finished clip will contain.
         self.on_chunk = on_chunk
+        #: Asked before any recording starts; a False means the attempt is
+        #: refused with a "blocked" event instead — the user finds out the
+        #: server is down at the moment of intent, not 20 s after talking.
+        self.can_start = can_start
+        #: Receives the audio of cancelled/unusable recordings so nothing the
+        #: user said is ever lost — a mistaken cancel can still be retried.
+        self.on_discard_audio = on_discard_audio
+        #: True: the recording ends itself on silence (wake word / tap flow).
+        #: False: push-to-talk — the key release is the only stop, so the
+        #: countdown machinery stays out of the way. Set by the daemon once a
+        #: press turns out to be a hold; reset on every start.
+        self.hands_free = True
 
         rec = cfg.recording
         self.rate = rec.sample_rate
@@ -129,9 +143,12 @@ class Session:
         if not self.recording:
             return False
         seconds = self.buffered_sec
+        pcm = b"".join(self._buf)
         self.recording = False
         self._reset_buffer()
         self.spotter.reset()
+        if pcm:
+            self.on_discard_audio(pcm)
         self._emit("discarded", "cancelled", seconds=seconds)
         return True
 
@@ -197,7 +214,8 @@ class Session:
             self._silence_bytes += len(chunk)
 
         silence_sec = self._silence_bytes / self.bytes_per_sec
-        if self._had_speech and silence_sec >= self.cfg.recording.silence_warn_sec:
+        if self.hands_free and self._had_speech \
+                and silence_sec >= self.cfg.recording.silence_warn_sec:
             remaining = max(0.0, self.cfg.recording.silence_sec - silence_sec)
             if abs(remaining - self._countdown_shown) >= COUNTDOWN_STEP:
                 self._countdown_shown = remaining
@@ -216,7 +234,11 @@ class Session:
                             + NOISE_ALPHA * min(level, NOISE_CEILING))
 
     def _start(self, why: str) -> None:
+        if not self.can_start():
+            self._emit("blocked", why)
+            return
         self.recording = True
+        self.hands_free = True
         self._reset_buffer()
         self._emit("started", why)
 
@@ -235,6 +257,8 @@ class Session:
         self.spotter.reset()  # a fresh recognizer; the old one heard the whole clip
 
         if not usable:
+            if pcm:
+                self.on_discard_audio(pcm)
             self._emit("discarded", why, seconds=seconds)
         else:
             self._emit("finished", why, seconds=seconds)
