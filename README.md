@@ -140,6 +140,19 @@ running, not a second channel alongside the pill.
 `vani cancel` — the tray's "Cancel", the ✕ on the pill, or holding the key
 while recording — throws the recording away instead of typing it.
 
+### False wakeups
+
+Vosk decodes against a grammar of just the wake phrases, so anything that
+rhymes gets forced onto the nearest one — its *partial* results flicker
+through "hey claude" on the way to "hey [unk]" for a phrase like "hey
+Claudia" or "hey there, could you". vani therefore requires a phrase seen in
+a partial to still be there `wake.confirm_sec` later (0.25 s by default); a
+phrase in a *final* result wakes immediately, since the decoder has already
+settled. Measured on synthesised speech, that took false wakeups from 2 in 10
+to 0 in 10 while still catching every real one, for about 0.25 s of extra
+latency. Set `wake.confirm_sec = 0` for the old instant behaviour, or raise it
+if your wake phrase sounds like something you say often.
+
 ### Nothing said is ever lost
 
 The last clip is always kept, including one you cancelled or one whose
@@ -250,6 +263,7 @@ show` prints the effective values with the token masked.
 | `wake.enabled` | `true` | set false for hotkey-only (no vosk needed) |
 | `wake.phrases` | `["hey claude", "hi claude"]` | words must exist in the Vosk vocabulary |
 | `wake.model_dir` | `~/.local/share/vani/vosk-model-small-en-us-0.15` | model location |
+| `wake.confirm_sec` | `0.25` | how long a phrase must persist before it counts — the false-wakeup defence; `0` restores the old instant trigger |
 | `recording.device` | — | pinned microphone (`vani mic`); empty = system default |
 | `recording.silence_sec` | `3` | silence that ends a recording |
 | `recording.silence_warn_sec` | `1` | silence before the countdown appears |

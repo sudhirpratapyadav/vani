@@ -69,6 +69,11 @@ class WakeConfig:
     phrases: list[str] = field(default_factory=lambda: ["hey claude", "hi claude"])
     #: Directory of the Vosk model; empty means the default under ~/.local/share/vani.
     model_dir: str = ""
+    #: How long a phrase heard in a partial result must persist before it
+    #: counts as a wake. The decoder flickers through near-matches ("hey
+    #: Claudia") and revises them a chunk later, so this is the main defence
+    #: against false wakeups. 0 fires on the first sighting, as vani used to.
+    confirm_sec: float = 0.25
 
 
 @dataclass
@@ -362,6 +367,8 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("ui.opacity must be between 0.2 and 1.0")
     if cfg.ui.position not in UI_POSITIONS:
         raise ConfigError("ui.position must be one of: " + ", ".join(UI_POSITIONS))
+    if cfg.wake.confirm_sec < 0:
+        raise ConfigError("wake.confirm_sec cannot be negative")
     if cfg.server.provider not in PROVIDERS:
         raise ConfigError("server.provider must be one of: " + ", ".join(PROVIDERS))
     if cfg.ui.captions not in UI_CAPTIONS:

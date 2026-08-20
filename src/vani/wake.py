@@ -40,9 +40,27 @@ class NullSpotter(Spotter):
 
 
 class VoskSpotter(Spotter):
-    def __init__(self, model_dir: Path, phrases: list[str], rate: int):
+    """Vosk against a grammar of just the wake phrases.
+
+    Two things stop it firing at everything. First, a phrase must appear as a
+    run of whole words — a substring test matched "hey claude" inside "hey
+    Claudia". Second, and this is what does the real work, a match in a
+    *partial* result only counts once it has survived `confirm_sec` of further
+    audio. Partials are volatile: the decoder flickers through "hey claude"
+    on its way to "hey [unk]" for a phrase that merely rhymes, then revises
+    it away a chunk later. Waiting a quarter of a second to see whether the
+    match sticks separated every true wake from every false one in testing,
+    at the cost of about 0.25 s of latency. A match in a *final* result needs
+    no such wait — the decoder has already settled.
+    """
+
+    def __init__(self, model_dir: Path, phrases: list[str], rate: int,
+                 confirm_sec: float = 0.25):
         self.phrases = [p.strip().lower() for p in phrases if p.strip()]
         self.rate = rate
+        self.confirm_sec = max(0.0, confirm_sec)
+        self._words = [p.split() for p in self.phrases]
+        self._held = -1.0
         if not self.phrases:
             raise WakeError("no wake phrases configured")
         if not model_dir.is_dir():
@@ -66,13 +84,35 @@ class VoskSpotter(Spotter):
         from vosk import KaldiRecognizer
 
         self._rec = KaldiRecognizer(self._model, self.rate, self._grammar)
+        self._held = -1.0
+
+    def _heard(self, text: str) -> bool:
+        """Is a wake phrase present as a run of whole words?"""
+        said = text.split()
+        for parts in self._words:
+            n = len(parts)
+            for i in range(len(said) - n + 1):
+                if said[i:i + n] == parts:
+                    return True
+        return False
 
     def feed(self, chunk: bytes) -> bool:
         if self._rec.AcceptWaveform(chunk):
-            text = json.loads(self._rec.Result()).get("text", "")
+            self._held = -1.0
+            # The decoder has committed to this; no confirmation needed.
+            return self._heard(json.loads(self._rec.Result()).get("text", ""))
+        partial = json.loads(self._rec.PartialResult()).get("partial", "")
+        if not self._heard(partial):
+            self._held = -1.0
+            return False
+        if self._held < 0:
+            self._held = 0.0          # first sighting; start the clock
         else:
-            text = json.loads(self._rec.PartialResult()).get("partial", "")
-        return any(p in text for p in self.phrases)
+            self._held += len(chunk) / (self.rate * 2)
+        if self._held < self.confirm_sec:
+            return False
+        self._held = -1.0
+        return True
 
     @property
     def describe(self) -> str:
@@ -83,4 +123,5 @@ def build(cfg, rate: int) -> Spotter:
     """Create the configured spotter, or NullSpotter when wake words are off."""
     if not cfg.wake.enabled:
         return NullSpotter()
-    return VoskSpotter(cfg.model_path, cfg.wake.phrases, rate)
+    return VoskSpotter(cfg.model_path, cfg.wake.phrases, rate,
+                       cfg.wake.confirm_sec)
